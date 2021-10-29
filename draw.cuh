@@ -51,7 +51,18 @@ __host__ void draw_image() {
 
 __host__ u32 create_shader(u8* shader_code, i32 shader_len, GLenum shader_type) {
     u32 shader = glCreateShader(shader_type);
-    glShaderSource(shader, 1, (const GLchar *const *) &shader_code, (const GLint *) &shader_len);
+    u8* config_h_ptr = config_h;
+    u8* shader_sources[3] {
+        (u8*) "#version 450 core\n",
+        config_h_ptr,
+        shader_code,
+    };
+    GLint shader_source_lengths[3] = {
+        18,
+        (GLint) config_h_len,
+        (GLint) shader_len,
+    };
+    glShaderSource(shader, 3, (const GLchar *const *) &shader_sources, (const GLint *) &shader_source_lengths);
     glCompileShader(shader);
 
     int  success;

@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <GL/glew.h>
 #include <GL/glut.h>
-#include "config.cuh"
+#include "config.h"
 #include "util.cuh"
 #include "draw.cuh"
 #include "math.cuh"

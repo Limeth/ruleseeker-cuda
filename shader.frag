@@ -1,4 +1,5 @@
-#version 450 core
+// (1) Prepended version directive
+// (2) Prepended config.h header
 out vec4 FragColor;
 
 void main()
