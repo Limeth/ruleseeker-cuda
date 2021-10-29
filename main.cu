@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <iostream>
 #include <stdlib.h>
+#include <GL/glew.h>
 #include <GL/glut.h>
 #include "config.cuh"
 #include "util.cuh"
@@ -250,8 +251,6 @@ __host__ __device__ u8 update_cell(u8* in, u8* out, int width, int height, int x
  *  height - vyska simulacni mrizky
  */
 void life_cpu(u8* in, u8* out, int width, int height) {
-    int threadID;
-
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
             update_cell(in, out, width, height, x, y);
@@ -349,16 +348,27 @@ void callKernelCUDA(void) {
 #endif
 }
 
+// called every frame
+void idle_func() {
+    callKernelCUDA();
+    glutPostRedisplay();
+}
+
+void finalize(void);
+
+static void handle_keys(unsigned char key, int x, int y) {
+    switch (key) {
+        case 27:	// ESC
+            finalize();
+            exit(0);
+    }
+}
 
 // inicializace CUDA - alokace potrebnych dat a vygenerovani pocatecniho stavu lifu
-void initialize(void) {
-    // alokace struktury bitmapy
-    bitmap = (bitmap_t*) malloc(sizeof(bitmap));
-    bitmap->width = GRID_WIDTH;
-    bitmap->height = GRID_HEIGHT;
+void initialize(int argc, char **argv) {
+    init_draw(argc, argv, GRID_WIDTH, GRID_HEIGHT, handle_keys, idle_func);
 
     cudaHostAlloc((void**) &(bitmap->pixels), bitmap->width*bitmap->height*sizeof(uchar4), cudaHostAllocDefault);
-
 
     // alokovani mista pro bitmapu na GPU
     int bitmapSize = bitmap->width*bitmap->height;
@@ -403,7 +413,6 @@ void initialize(void) {
 
 // funkce volana pri ukonceni aplikace, uvolni vsechy prostredky alokovane v CUDA 
 void finalize(void) {
-
     // uvolneni bitmapy - na CPU i GPU
     if (bitmap != NULL) {
         if (bitmap->pixels != NULL) {
@@ -419,7 +428,6 @@ void finalize(void) {
         cudaFree(gpu_ruleset);
         cudaFree(gpu_grid_states_1);
         cudaFree(gpu_grid_states_2);
-        free(bitmap);
     }
 
     // uvolneni simulacnich mrizek pro CPU variantu lifu
@@ -431,28 +439,16 @@ void finalize(void) {
     // zruseni struktur udalosti
     CHECK_ERROR(cudaEventDestroy( start ));
     CHECK_ERROR(cudaEventDestroy( stop ));
-}
 
-// called every frame
-void idle_func() {
-    callKernelCUDA();
-    glutPostRedisplay();
-}
-
-static void handle_keys(unsigned char key, int x, int y) {
-    switch (key) {
-        case 27:	// ESC
-            finalize();
-            exit(0);
-    }
+    finalize_draw();
 }
 
 int main(int argc, char **argv) {
     print_configuration();
-    initialize();
+    initialize(argc, argv);
 
     printf("Press Enter to begin simulation.");
     getchar();
 
-    return ui_loop(argc, argv, GRID_WIDTH, GRID_HEIGHT, handle_keys, idle_func);
+    return ui_loop();
 }

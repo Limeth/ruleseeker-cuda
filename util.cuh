@@ -10,6 +10,8 @@
 #define u16 unsigned short
 #define u32 unsigned int
 #define u64 unsigned long
+#define f32 float
+#define f64 double
 
 #define i8vec1  char1
 #define i16vec1 short1
@@ -19,6 +21,8 @@
 #define u16vec1 ushort1
 #define u32vec1 uint1
 #define u64vec1 ulong1
+#define f32vec1 float1
+#define f64vec1 double1
 
 #define i8vec2  char2
 #define i16vec2 short2
@@ -28,6 +32,8 @@
 #define u16vec2 ushort2
 #define u32vec2 uint2
 #define u64vec2 ulong2
+#define f32vec2 float2
+#define f64vec2 double2
 
 #define i8vec3  char3
 #define i16vec3 short3
@@ -37,6 +43,8 @@
 #define u16vec3 ushort3
 #define u32vec3 uint3
 #define u64vec3 ulong3
+#define f32vec3 float3
+#define f64vec3 double3
 
 #define i8vec4  char4
 #define i16vec4 short4
@@ -46,6 +54,8 @@
 #define u16vec4 ushort4
 #define u32vec4 uint4
 #define u64vec4 ulong4
+#define f32vec4 float4
+#define f64vec4 double4
 
 #define make_i8vec1(...)  make_char1(__VA_ARGS__)
 #define make_i16vec1(...) make_short1(__VA_ARGS__)
@@ -55,6 +65,8 @@
 #define make_u16vec1(...) make_ushort1(__VA_ARGS__)
 #define make_u32vec1(...) make_uint1(__VA_ARGS__)
 #define make_u64vec1(...) make_ulong1(__VA_ARGS__)
+#define make_f32vec1(...) make_float1(__VA_ARGS__)
+#define make_f64vec1(...) make_double1(__VA_ARGS__)
 
 #define make_i8vec2(...)  make_char2(__VA_ARGS__)
 #define make_i16vec2(...) make_short2(__VA_ARGS__)
@@ -64,6 +76,8 @@
 #define make_u16vec2(...) make_ushort2(__VA_ARGS__)
 #define make_u32vec2(...) make_uint2(__VA_ARGS__)
 #define make_u64vec2(...) make_ulong2(__VA_ARGS__)
+#define make_f32vec2(...) make_float2(__VA_ARGS__)
+#define make_f64vec2(...) make_double2(__VA_ARGS__)
 
 #define make_i8vec3(...)  make_char3(__VA_ARGS__)
 #define make_i16vec3(...) make_short3(__VA_ARGS__)
@@ -73,6 +87,8 @@
 #define make_u16vec3(...) make_ushort3(__VA_ARGS__)
 #define make_u32vec3(...) make_uint3(__VA_ARGS__)
 #define make_u64vec3(...) make_ulong3(__VA_ARGS__)
+#define make_f32vec3(...) make_float3(__VA_ARGS__)
+#define make_f64vec3(...) make_double3(__VA_ARGS__)
 
 #define make_i8vec4(...)  make_char4(__VA_ARGS__)
 #define make_i16vec4(...) make_short4(__VA_ARGS__)
@@ -82,6 +98,8 @@
 #define make_u16vec4(...) make_ushort4(__VA_ARGS__)
 #define make_u32vec4(...) make_uint4(__VA_ARGS__)
 #define make_u64vec4(...) make_ulong4(__VA_ARGS__)
+#define make_f32vec4(...) make_float4(__VA_ARGS__)
+#define make_f64vec4(...) make_double4(__VA_ARGS__)
 
 // funkce pro osetreni chyb
 static inline void check_error(cudaError_t error, const char *file, int line) {
