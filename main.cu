@@ -96,6 +96,85 @@ __inline__ __host__ __device__ int get_ruleset_size() {
 #endif
 }
 
+__inline__ __host__ __device__ void get_neighbours(i32 x, i32 y, i32vec2 neighbours[CELL_NEIGHBOURHOOD_SIZE]) {
+#if GRID_GEOMETRY == GRID_GEOMETRY_SQUARE
+    #if CELL_NEIGHBOURHOOD_TYPE == CELL_NEIGHBOURHOOD_TYPE_VERTEX
+    neighbours[0] = make_i32vec2(-1, -1);
+    neighbours[1] = make_i32vec2( 0, -1);
+    neighbours[2] = make_i32vec2( 1, -1);
+    neighbours[3] = make_i32vec2(-1,  0);
+    neighbours[4] = make_i32vec2( 1,  0);
+    neighbours[5] = make_i32vec2(-1,  1);
+    neighbours[6] = make_i32vec2( 0,  1);
+    neighbours[7] = make_i32vec2( 1,  1);
+    #elif CELL_NEIGHBOURHOOD_TYPE == CELL_NEIGHBOURHOOD_TYPE_EDGE
+    neighbours[0] = make_i32vec2(-1,  0);
+    neighbours[1] = make_i32vec2( 0, -1);
+    neighbours[2] = make_i32vec2( 1,  0);
+    neighbours[3] = make_i32vec2( 0,  1);
+    #endif
+#elif GRID_GEOMETRY == GRID_GEOMETRY_TRIANGLE
+    bool pointing_up = (x + y) % 2 == 0;
+    #if CELL_NEIGHBOURHOOD_TYPE == CELL_NEIGHBOURHOOD_TYPE_VERTEX
+    if (pointing_up) {
+        neighbours[ 0] = make_i32vec2(-1,  0);
+        neighbours[ 1] = make_i32vec2(-1, -1);
+        neighbours[ 2] = make_i32vec2( 0, -1);
+        neighbours[ 3] = make_i32vec2( 1, -1);
+        neighbours[ 4] = make_i32vec2( 1,  0);
+        neighbours[ 5] = make_i32vec2( 2,  0);
+        neighbours[ 6] = make_i32vec2( 2,  1);
+        neighbours[ 7] = make_i32vec2( 1,  1);
+        neighbours[ 8] = make_i32vec2( 0,  1);
+        neighbours[ 9] = make_i32vec2(-1,  1);
+        neighbours[10] = make_i32vec2(-2,  1);
+        neighbours[11] = make_i32vec2(-2,  0);
+    } else {
+        neighbours[ 0] = make_i32vec2(-1,  0);
+        neighbours[ 1] = make_i32vec2(-2,  0);
+        neighbours[ 2] = make_i32vec2(-2, -1);
+        neighbours[ 3] = make_i32vec2(-1, -1);
+        neighbours[ 4] = make_i32vec2( 0, -1);
+        neighbours[ 5] = make_i32vec2( 1, -1);
+        neighbours[ 6] = make_i32vec2( 2, -1);
+        neighbours[ 7] = make_i32vec2( 2,  0);
+        neighbours[ 8] = make_i32vec2( 1,  0);
+        neighbours[ 9] = make_i32vec2( 1,  1);
+        neighbours[10] = make_i32vec2( 0,  1);
+        neighbours[11] = make_i32vec2(-1,  1);
+    }
+    #elif CELL_NEIGHBOURHOOD_TYPE == CELL_NEIGHBOURHOOD_TYPE_EDGE
+    if (pointing_up) {
+        neighbours[0] = make_i32vec2(-1,  0);
+        neighbours[1] = make_i32vec2( 1,  0);
+        neighbours[2] = make_i32vec2( 0,  1);
+    } else {
+        neighbours[0] = make_i32vec2(-1,  0);
+        neighbours[1] = make_i32vec2( 1,  0);
+        neighbours[2] = make_i32vec2( 0, -1);
+    }
+    #endif
+#elif GRID_GEOMETRY == GRID_GEOMETRY_HEXAGON
+    bool row_even = y % 2 == 0;
+
+    if (row_even) {
+        neighbours[0] = make_i32vec2(-1,  0);
+        neighbours[1] = make_i32vec2(-1, -1);
+        neighbours[2] = make_i32vec2( 0, -1);
+        neighbours[3] = make_i32vec2( 1,  0);
+        neighbours[4] = make_i32vec2( 0,  1);
+        neighbours[5] = make_i32vec2(-1,  1);
+    } else {
+        neighbours[0] = make_i32vec2(-1,  0);
+        neighbours[1] = make_i32vec2( 0, -1);
+        neighbours[2] = make_i32vec2( 1, -1);
+        neighbours[3] = make_i32vec2( 1,  0);
+        neighbours[4] = make_i32vec2( 1,  1);
+        neighbours[5] = make_i32vec2( 0,  1);
+    }
+#endif
+}
+
 void print_configuration() {
     printf("\nConfiguration:\n");
     printf("\tGrid width: %d\n", GRID_WIDTH);
@@ -138,6 +217,14 @@ __device__ u8* device_gpu_ruleset;
 u8* gpu_ruleset = NULL;
 u8* cpu_ruleset = NULL;
 
+__inline__ __host__ __device__ u8* get_ruleset() {
+#ifdef __CUDA_ARCH__
+    return device_gpu_ruleset;
+#else
+    return cpu_ruleset;
+#endif
+}
+
 __device__ u8* gpu_grid_states_1 = NULL;
 __device__ u8* gpu_grid_states_2 = NULL;
 
@@ -148,19 +235,15 @@ u8 *cpu_grid_states_tmp = NULL;
 // udalosti pro mereni casu v CUDA
 cudaEvent_t start, stop;
 
-__inline__ __host__ __device__ int getCellIndex(int width, int height, int x, int y) {
+__inline__ __host__ __device__ int get_cell_index(int width, int height, int x, int y) {
     x = mod(x, width);
     y = mod(y, height);
 
     return x + y * width;
 }
 
-__host__ __device__ u8 getNextState(u8 current_state, u8* neighbours) {
-#ifdef __CUDA_ARCH__
-    u8* ruleset = device_gpu_ruleset;
-#else
-    u8* ruleset = cpu_ruleset;
-#endif
+__host__ __device__ u8 get_next_state(u8 current_state, u8* neighbours) {
+    u8* ruleset = get_ruleset();
 
     // In debug mode, validate the `current_state` argument.
     assert(current_state < CELL_STATES);
@@ -174,50 +257,52 @@ __host__ __device__ u8 getNextState(u8 current_state, u8* neighbours) {
             u8 current_neighbours = neighbours[state];
             total_neighbours += current_neighbours;
 
-            if (!(current_neighbours <= CELL_NEIGHBOURHOOD_SIZE)) {
-                printf("current_neighbours: %d\n", current_neighbours);
-                assert(current_neighbours <= CELL_NEIGHBOURHOOD_SIZE);
-            }
+            assert(current_neighbours <= CELL_NEIGHBOURHOOD_SIZE);
         }
 
         assert(total_neighbours == CELL_NEIGHBOURHOOD_SIZE);
     }
 #endif
 
-    /* int index = current_state * 9 + neighbours; */
-    int index = get_rule_index(get_cell_neighbourhood_combinations(), current_state, CELL_STATES, neighbours);
+    u32 index = get_rule_index(get_cell_neighbourhood_combinations(), current_state, CELL_STATES, neighbours);
 
-    if (index >= get_ruleset_size()) {
-        printf("index: %d\n", index);
-        printf("gpu_ruleset_size: %d\n", get_ruleset_size());
-    }
-
-    assert(index >= 0);
     assert(index < get_ruleset_size());
 
     return ruleset[index];
 }
 
-__host__ __device__ u8 updateCell(u8* in, u8* out, int width, int height, int x, int y) {
-    int cellID = getCellIndex(width, height, x, y);
+__host__ __device__ u8 update_cell(u8* in, u8* out, int width, int height, int x, int y) {
+    int cellID = get_cell_index(width, height, x, y);
     u8 currentState = in[cellID];
-    u8 neighbours[CELL_STATES] = { 0 };
+    i32vec2 neighbours[CELL_NEIGHBOURHOOD_SIZE];
+    u8 state_count[CELL_STATES] = { 0 };
 
-    for (int rel_y = -1; rel_y <= 1; rel_y++) {
-        for (int rel_x = -1; rel_x <= 1; rel_x++) {
-            if (rel_x == 0 && rel_y == 0) {
-                continue;
-            }
+    get_neighbours(x, y, neighbours);
 
-            int abs_x = x + rel_x;
-            int abs_y = y + rel_y;
-            int neighbourID = getCellIndex(width, height, abs_x, abs_y);
+    for (u32 neighbour_index = 0; neighbour_index < CELL_NEIGHBOURHOOD_SIZE; neighbour_index++) {
+        i32vec2 neighbour = neighbours[neighbour_index];
+        i32 abs_x = x + neighbour.x;
+        i32 abs_y = y + neighbour.y;
+        i32 neighbour_cell_index = get_cell_index(width, height, abs_x, abs_y);
 
-            neighbours[in[neighbourID]] += 1;
-        }
+        state_count[in[neighbour_cell_index]] += 1;
     }
 
-    int nextState = getNextState(currentState, neighbours);
+    /* for (int rel_y = -1; rel_y <= 1; rel_y++) { */
+    /*     for (int rel_x = -1; rel_x <= 1; rel_x++) { */
+    /*         if (rel_x == 0 && rel_y == 0) { */
+    /*             continue; */
+    /*         } */
+
+    /*         int abs_x = x + rel_x; */
+    /*         int abs_y = y + rel_y; */
+    /*         int neighbourID = get_cell_index(width, height, abs_x, abs_y); */
+
+    /*         state_count[in[neighbourID]] += 1; */
+    /*     } */
+    /* } */
+
+    int nextState = get_next_state(currentState, state_count);
     out[cellID] = nextState;
 
     return nextState;
@@ -234,7 +319,7 @@ void life_cpu(u8* in, u8* out, int width, int height) {
 
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
-            updateCell(in, out, width, height, x, y);
+            update_cell(in, out, width, height, x, y);
         }
     }
 }
@@ -254,11 +339,11 @@ __inline__ __device__ void stateToColor(u8 oldValue, u8 newValue, uchar4* bitmap
 __global__ void life_kernel(uchar4* bitmap, u8* in, u8* out, int width, int height) {
     int x = threadIdx.x + blockIdx.x * BLOCK_LENGTH;
     int y = threadIdx.y + blockIdx.y * BLOCK_LENGTH;
-    int threadID = getCellIndex(width, height, x, y);
+    int threadID = get_cell_index(width, height, x, y);
 
     if (threadID < width*height) {
         u8 oldValue = in[threadID];
-        u8 newValue = updateCell(in, out, width, height, x, y);
+        u8 newValue = update_cell(in, out, width, height, x, y);
 
         stateToColor(oldValue, newValue, bitmap, threadID);
     }
