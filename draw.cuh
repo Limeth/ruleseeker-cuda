@@ -1,22 +1,13 @@
 #pragma once
 #include <GL/glew.h>
-#include <GL/gl.h>
-#include <GL/glu.h>
-#include <GL/glut.h>
+#include <GL/freeglut.h>
+#include <cuda_runtime.h>
+#include <cuda_gl_interop.h>
 #include <vector>
 #include "shaders.cuh"
 
 using namespace std;
 
-// struktura bitmapy
-typedef struct {
-    int width;          // sirka bitmapy v pixelech
-    int height;         // vyska bitmapy v pixelech
-    uchar4 *pixels;     // ukazatel na bitmapu na strane CPU
-    uchar4 *deviceData; // ukazatel na data bitmapy na GPU
-} bitmap_t;
-
-bitmap_t *bitmap = NULL;
 u32 vao;
 u32 vbo;
 u32 shader_vertex;
@@ -24,26 +15,37 @@ u32 shader_fragment;
 u32 shader_program;
 vector<f32vec2> vertices;
 
+GLuint gpu_vbo_grid_states_1;
+GLuint gpu_vbo_grid_states_2;
+
+struct cudaGraphicsResource* gpu_cuda_grid_states_1 = NULL;
+struct cudaGraphicsResource* gpu_cuda_grid_states_2 = NULL;
+
 // vykresleni bitmapy v OpenGL
 __host__ void draw_image() {
     glClearColor(0.0, 0.0, 0.0, 1.0);
     glClear(GL_COLOR_BUFFER_BIT);
 
-    if (bitmap != NULL && bitmap->pixels != NULL) {
-        /* glDrawPixels(bitmap->width, bitmap->height, GL_RGBA, GL_UNSIGNED_BYTE, bitmap->pixels); */
-
+    // Draw
+    {
         glBindVertexArray(vao);
 
-        glBindBuffer(GL_ARRAY_BUFFER, vbo);
-        glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(f32vec2), &vertices[0], GL_STATIC_DRAW);
+        /* glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(f32vec2), &vertices[0], GL_STATIC_DRAW); */
 
         glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, sizeof(f32vec2), (void*) 0);
+        glBindBuffer(GL_ARRAY_BUFFER, gpu_vbo_grid_states_1);
+        glVertexAttribIPointer(0, 1, GL_UNSIGNED_BYTE, sizeof(u8), (void*) 0);
+        glVertexAttribDivisor(0, 1);
+
+        glEnableVertexAttribArray(1);
+        glBindBuffer(GL_ARRAY_BUFFER, gpu_vbo_grid_states_2);
+        glVertexAttribIPointer(1, 1, GL_UNSIGNED_BYTE, sizeof(u8), (void*) 0);
+        glVertexAttribDivisor(1, 1);
 
         glUseProgram(shader_program);
 
         glBindVertexArray(vao);
-        glDrawArrays(GL_TRIANGLE_FAN, 0, 3);
+        glDrawArraysInstanced(GL_TRIANGLE_FAN, 0, CELL_VERTICES, GRID_AREA);
     }
 
     glutSwapBuffers();
@@ -70,11 +72,41 @@ __host__ u32 create_shader(u8* shader_code, i32 shader_len, GLenum shader_type) 
 
     if (!success) {
         char infoLog[512];
-        glGetShaderInfoLog(shader_vertex, 512, NULL, infoLog);
-        std::cout << "ERROR::SHADER::VERTEX::COMPILATION_FAILED\n" << infoLog << std::endl;
+        GLsizei len;
+        glGetShaderInfoLog(shader_vertex, 512, &len, infoLog);
+        std::cout << "ERROR::SHADER::COMPILATION_FAILED: " << len << std::endl << infoLog << std::endl;
+        exit(1);
     }
 
     return shader;
+}
+
+// Create an OpenGL buffer accessible from CUDA
+__host__ void create_cuda_vbo(GLuint *vbo, struct cudaGraphicsResource **vbo_res, u32 size, u32 vbo_res_flags) {
+    /* assert(vbo); */
+
+    // create buffer object
+    glGenBuffers(1, vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, *vbo);
+
+    // initialize buffer object
+    glBufferData(GL_ARRAY_BUFFER, size, 0, GL_DYNAMIC_DRAW);
+
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+    // register this buffer object with CUDA
+    CHECK_ERROR(cudaGraphicsGLRegisterBuffer(vbo_res, *vbo, vbo_res_flags));
+}
+
+// Delete an OpenGL buffer accessible from CUDA
+__host__ void delete_cuda_vbo(GLuint *vbo, struct cudaGraphicsResource *vbo_res) {
+    // unregister this buffer object with CUDA
+    CHECK_ERROR(cudaGraphicsUnregisterResource(vbo_res));
+
+    glBindBuffer(1, *vbo);
+    glDeleteBuffers(1, vbo);
+
+    *vbo = 0;
 }
 
 __host__ void init_draw(
@@ -85,13 +117,8 @@ __host__ void init_draw(
         void (handle_keys)(unsigned char key, int x, int y),
         void (idle_func)()
 ) {
-    // alokace struktury bitmapy
-    bitmap = (bitmap_t*) malloc(sizeof(bitmap));
-    bitmap->width = GRID_WIDTH;
-    bitmap->height = GRID_HEIGHT;
-
     glutInit(&argc, argv);
-    glutInitWindowSize(width, height);
+    glutInitWindowSize(800, 800);
     glutInitDisplayMode( GLUT_DOUBLE | GLUT_RGBA );
     glutCreateWindow("Life Game");
     glutDisplayFunc(draw_image);
@@ -100,12 +127,17 @@ __host__ void init_draw(
 
     glewInit();
 
+    glDisable(GL_DEPTH_TEST);
+
     vertices.push_back(make_f32vec2(-1.0, -1.0));
     vertices.push_back(make_f32vec2( 1.0, -1.0));
     vertices.push_back(make_f32vec2( 0.0,  1.0));
 
     glGenVertexArrays(1, &vao);
     glGenBuffers(1, &vbo);
+
+    create_cuda_vbo(&gpu_vbo_grid_states_1, &gpu_cuda_grid_states_1, GRID_AREA * sizeof(u8), cudaGraphicsRegisterFlagsNone);
+    create_cuda_vbo(&gpu_vbo_grid_states_2, &gpu_cuda_grid_states_2, GRID_AREA * sizeof(u8), cudaGraphicsRegisterFlagsNone);
 
     shader_vertex = create_shader(shader_vert, shader_vert_len, GL_VERTEX_SHADER);
     shader_fragment = create_shader(shader_frag, shader_frag_len, GL_FRAGMENT_SHADER);
@@ -122,6 +154,7 @@ __host__ void init_draw(
         char infoLog[512];
         glGetProgramInfoLog(shader_program, 512, NULL, infoLog);
         std::cout << "ERROR::PROGRAM::LINK_FAILED\n" << infoLog << std::endl;
+        exit(1);
     }
 
     glUseProgram(shader_program);
@@ -130,7 +163,6 @@ __host__ void init_draw(
 }
 
 __host__ void finalize_draw() {
-    free(bitmap);
 }
 
 

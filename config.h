@@ -15,9 +15,9 @@
  **************************/
 
 // [uint] simulation grid width
-#define GRID_WIDTH  1000
+#define GRID_WIDTH  400
 // [uint] simulation grid height
-#define GRID_HEIGHT 1000
+#define GRID_HEIGHT 400
 // [enum] the shape of the grid's cells (square for Conway's GoL)
 /* #define GRID_GEOMETRY GRID_GEOMETRY_TRIANGLE */
 // [enum] which cells are considered in the neighbourhood (vertex for Conway's GoL)
@@ -61,6 +61,15 @@
     #endif
 #endif
 
+#if GRID_GEOMETRY == GRID_GEOMETRY_SQUARE
+    #define CELL_VERTICES 4
+#elif GRID_GEOMETRY == GRID_GEOMETRY_TRIANGLE
+    #define CELL_VERTICES 3
+#elif GRID_GEOMETRY == GRID_GEOMETRY_HEXAGON
+    #define CELL_VERTICES 6
+#endif
+
+#define GRID_AREA (GRID_WIDTH * GRID_HEIGHT)
 #define BLOCK_AREA            (BLOCK_LENGTH * BLOCK_LENGTH)                     // threads per execution block
 #define GRID_WIDTH_IN_BLOCKS  ((GRID_WIDTH + BLOCK_LENGTH - 1) / BLOCK_LENGTH)  // execution grid width
 #define GRID_HEIGHT_IN_BLOCKS ((GRID_HEIGHT + BLOCK_LENGTH - 1) / BLOCK_LENGTH) // execution grid height

@@ -2,7 +2,7 @@
 #include <iostream>
 #include <stdlib.h>
 #include <GL/glew.h>
-#include <GL/glut.h>
+#include <GL/freeglut.h>
 #include "config.h"
 #include "util.cuh"
 #include "draw.cuh"
@@ -161,8 +161,9 @@ __inline__ __host__ __device__ u8* get_ruleset() {
 #endif
 }
 
-__device__ u8* gpu_grid_states_1 = NULL;
-__device__ u8* gpu_grid_states_2 = NULL;
+// nahrazeno CUDA zdroji
+/* __device__ u8* gpu_grid_states_1 = NULL; */
+/* __device__ u8* gpu_grid_states_2 = NULL; */
 
 u8 *cpu_grid_states_1 = NULL;
 u8 *cpu_grid_states_2 = NULL;
@@ -250,10 +251,10 @@ __host__ __device__ u8 update_cell(u8* in, u8* out, int width, int height, int x
  *  width - sirka simulacni mrizky
  *  height - vyska simulacni mrizky
  */
-void life_cpu(u8* in, u8* out, int width, int height) {
-    for (int y = 0; y < height; y++) {
-        for (int x = 0; x < width; x++) {
-            update_cell(in, out, width, height, x, y);
+void life_cpu(u8* in, u8* out) {
+    for (int y = 0; y < GRID_HEIGHT; y++) {
+        for (int x = 0; x < GRID_WIDTH; x++) {
+            update_cell(in, out, GRID_WIDTH, GRID_HEIGHT, x, y);
         }
     }
 }
@@ -270,26 +271,13 @@ __inline__ __device__ void stateToColor(u8 oldValue, u8 newValue, uchar4* bitmap
     bitmap[bitmapId] = color;
 }
 
-__global__ void life_kernel(uchar4* bitmap, u8* in, u8* out, int width, int height) {
+__global__ void life_kernel(u8* in, u8* out) {
     int x = threadIdx.x + blockIdx.x * BLOCK_LENGTH;
     int y = threadIdx.y + blockIdx.y * BLOCK_LENGTH;
-    int threadID = get_cell_index(width, height, x, y);
 
-    if (threadID < width*height) {
-        u8 oldValue = in[threadID];
-        u8 newValue = update_cell(in, out, width, height, x, y);
-
-        stateToColor(oldValue, newValue, bitmap, threadID);
+    if (x < GRID_WIDTH && y < GRID_HEIGHT) {
+        u8 newValue = update_cell(in, out, GRID_WIDTH, GRID_HEIGHT, x, y);
     }
-
-    /* int combination[3] = { */
-    /*     5, 0, 3 */
-    /* }; */
-
-    /* if (threadID == 0) { */
-    /*     int result = combination_index_with_repetition(3, combination); */
-    /*     printf("gpu result: %d\n", result); */
-    /* } */
 }
 
 
@@ -302,10 +290,20 @@ void callKernelCUDA(void) {
     dim3 blocks(GRID_WIDTH_IN_BLOCKS, GRID_HEIGHT_IN_BLOCKS);
     dim3 threads(BLOCK_LENGTH, BLOCK_LENGTH);
 
-    // aktualizace simulace + vygenerovani bitmapy pro zobrazeni stavu simulace
-    life_kernel<<<blocks,threads>>>(bitmap->deviceData, gpu_grid_states_1, gpu_grid_states_2, bitmap->width, bitmap->height);
+    CHECK_ERROR(cudaGraphicsMapResources(1, &gpu_cuda_grid_states_1, 0));
+    CHECK_ERROR(cudaGraphicsMapResources(1, &gpu_cuda_grid_states_2, 0));
 
-    // prohozeni ukazatelu (u textur pouzit pouze gpu_grid_states_2)
+    u8* gpu_grid_states_1 = NULL;
+    u8* gpu_grid_states_2 = NULL;
+
+    CHECK_ERROR(cudaGraphicsResourceGetMappedPointer((void**) &gpu_grid_states_1, NULL, gpu_cuda_grid_states_1));
+    CHECK_ERROR(cudaGraphicsResourceGetMappedPointer((void**) &gpu_grid_states_2, NULL, gpu_cuda_grid_states_2));
+
+    // aktualizace simulace + vygenerovani bitmapy pro zobrazeni stavu simulace
+    life_kernel<<<blocks,threads>>>(gpu_grid_states_1, gpu_grid_states_2);
+
+    swap(gpu_vbo_grid_states_1, gpu_vbo_grid_states_2);
+    swap(gpu_cuda_grid_states_1, gpu_cuda_grid_states_2);
     swap(gpu_grid_states_1, gpu_grid_states_2);
 
     // ulozeni casu ukonceni simulace
@@ -318,34 +316,33 @@ void callKernelCUDA(void) {
     CHECK_ERROR(cudaEventElapsedTime(&elapsedTime, start, stop));
     printf("Update: %f ms\n", elapsedTime);
 
-    // kopirovani bitmapy zpet na CPU pro zobrazeni
-    CHECK_ERROR(cudaMemcpy(bitmap->pixels, bitmap->deviceData, bitmap->width*bitmap->height*sizeof(uchar4), cudaMemcpyDeviceToHost));
-
 #if CPU_VERIFY
     printf("Verifying on the CPU...\n");
     // krok simulace life game na CPU
-    life_cpu(cpu_grid_states_1, cpu_grid_states_2, bitmap->width, bitmap->height);
+    life_cpu(cpu_grid_states_1, cpu_grid_states_2);
     swap(cpu_grid_states_1, cpu_grid_states_2);
 
-    cudaMemcpy(cpu_grid_states_tmp, gpu_grid_states_1, bitmap->width*bitmap->height*sizeof(u8), cudaMemcpyDeviceToHost);
+    cudaMemcpy(cpu_grid_states_tmp, gpu_grid_states_1, GRID_AREA * sizeof(u8), cudaMemcpyDeviceToHost);
 
     int diffs = 0;
 
     // porovnani vysledku CPU simulace a GPU simulace
-    for(int row=0;row<bitmap->height;row++) {
-        for(int col=0; col<bitmap->width; col++) {
+    for (i32 y = 0; y < GRID_HEIGHT; y++) {
+        for (i32 x = 0; x < GRID_WIDTH; x++) {
+            i32 threadID = x + y * GRID_WIDTH;
 
-            int rowAddr = row * bitmap->width;
-            int threadID = rowAddr + col;	// index vlakna
-
-            if(cpu_grid_states_1[threadID] != cpu_grid_states_tmp[threadID])
+            if (cpu_grid_states_1[threadID] != cpu_grid_states_tmp[threadID]) {
                 diffs++;
+            }
         }
     }
 
     if(diffs != 0)
         std::cout << "CHYBA: " << diffs << " rozdily mezi CPU & GPU simulacni mrizkou" << std::endl;
 #endif
+
+    CHECK_ERROR(cudaGraphicsUnmapResources(1, &gpu_cuda_grid_states_1, 0));
+    CHECK_ERROR(cudaGraphicsUnmapResources(1, &gpu_cuda_grid_states_2, 0));
 }
 
 // called every frame
@@ -368,31 +365,36 @@ static void handle_keys(unsigned char key, int x, int y) {
 void initialize(int argc, char **argv) {
     init_draw(argc, argv, GRID_WIDTH, GRID_HEIGHT, handle_keys, idle_func);
 
-    cudaHostAlloc((void**) &(bitmap->pixels), bitmap->width*bitmap->height*sizeof(uchar4), cudaHostAllocDefault);
-
     // alokovani mista pro bitmapu na GPU
-    int bitmapSize = bitmap->width*bitmap->height;
     CHECK_ERROR(cudaMalloc((void**) &(gpu_ruleset), 2 * 9 * sizeof(u8)));
-    CHECK_ERROR(cudaMalloc((void**) &(bitmap->deviceData), bitmapSize*sizeof(uchar4)));
-    CHECK_ERROR(cudaMalloc((void**) &(gpu_grid_states_1), bitmapSize*sizeof(u8)));
-    CHECK_ERROR(cudaMalloc((void**) &(gpu_grid_states_2), bitmapSize*sizeof(u8)));
-
-    cudaMemset(bitmap->deviceData, 0, bitmapSize*sizeof(uchar4));
 
     cpu_ruleset = (u8*) malloc(2 * 9 * sizeof(u8));
-    cpu_grid_states_1 = (u8*) malloc(bitmapSize*sizeof(u8));
-    cpu_grid_states_2 = (u8*) malloc(bitmapSize*sizeof(u8));
-    cpu_grid_states_tmp = (u8*) malloc(bitmapSize*sizeof(u8));
+    cpu_grid_states_1 = (u8*) malloc(GRID_AREA * sizeof(u8));
+    cpu_grid_states_2 = (u8*) malloc(GRID_AREA * sizeof(u8));
+    cpu_grid_states_tmp = (u8*) malloc(GRID_AREA * sizeof(u8));
 
     srand(0);
 
     // inicializace pocatecniho stavu lifu
-    for (int i = 0; i < bitmapSize; i++) {
+    for (int i = 0; i < GRID_AREA; i++) {
         cpu_grid_states_1[i] = (u8) (rand() % 2);
     }
 
+    CHECK_ERROR(cudaGraphicsMapResources(1, &gpu_cuda_grid_states_1, 0));
+    CHECK_ERROR(cudaGraphicsMapResources(1, &gpu_cuda_grid_states_2, 0));
+
+    u8* gpu_grid_states_1 = NULL;
+    u8* gpu_grid_states_2 = NULL;
+
+    CHECK_ERROR(cudaGraphicsResourceGetMappedPointer((void**) &gpu_grid_states_1, NULL, gpu_cuda_grid_states_1));
+    CHECK_ERROR(cudaGraphicsResourceGetMappedPointer((void**) &gpu_grid_states_2, NULL, gpu_cuda_grid_states_2));
+
     // prekopirovani pocatecniho stavu do GPU
-    cudaMemcpy(gpu_grid_states_1, cpu_grid_states_1, bitmapSize*sizeof(u8), cudaMemcpyHostToDevice);
+    cudaMemcpy(gpu_grid_states_1, cpu_grid_states_1, GRID_AREA * sizeof(u8), cudaMemcpyHostToDevice);
+    cudaMemcpy(gpu_grid_states_2, cpu_grid_states_1, GRID_AREA * sizeof(u8), cudaMemcpyHostToDevice);
+
+    CHECK_ERROR(cudaGraphicsUnmapResources(1, &gpu_cuda_grid_states_1, 0));
+    CHECK_ERROR(cudaGraphicsUnmapResources(1, &gpu_cuda_grid_states_2, 0));
 
     // nakopirovani tabulky novych stavu do konstantni pameti
     u8 ruleset[2 * 9] = {
@@ -414,21 +416,7 @@ void initialize(int argc, char **argv) {
 // funkce volana pri ukonceni aplikace, uvolni vsechy prostredky alokovane v CUDA 
 void finalize(void) {
     // uvolneni bitmapy - na CPU i GPU
-    if (bitmap != NULL) {
-        if (bitmap->pixels != NULL) {
-            // uvolneni bitmapy na CPU
-            cudaFreeHost(bitmap->pixels);
-            bitmap->pixels = NULL;
-        }
-        if (bitmap->deviceData != NULL) {
-            // uvolneni bitmapy na GPU
-            cudaFree(bitmap->deviceData);
-            bitmap->deviceData = NULL;
-        }
-        cudaFree(gpu_ruleset);
-        cudaFree(gpu_grid_states_1);
-        cudaFree(gpu_grid_states_2);
-    }
+    cudaFree(gpu_ruleset);
 
     // uvolneni simulacnich mrizek pro CPU variantu lifu
     free(cpu_ruleset);

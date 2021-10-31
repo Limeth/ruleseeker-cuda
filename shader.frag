@@ -1,8 +1,18 @@
 // (1) Prepended version directive
 // (2) Prepended config.h header
-out vec4 FragColor;
+layout (location = 0) in flat uint in_cell_state_current;
+layout (location = 1) in flat uint in_cell_state_previous;
 
-void main()
-{
-    FragColor = vec4(1.0f, 0.5f, 0.2f, 1.0f);
+out vec4 out_color;
+
+void main() {
+#if CELL_STATES == 2
+    vec3 color = vec3(
+        float(!bool(in_cell_state_current) &&  bool(in_cell_state_previous)),
+        float( bool(in_cell_state_current) && !bool(in_cell_state_previous)),
+        float( bool(in_cell_state_current) &&  bool(in_cell_state_previous))
+    );
+#endif
+
+    out_color = vec4(color, 1.0);
 } 
