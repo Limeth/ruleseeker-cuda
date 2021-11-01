@@ -2,17 +2,10 @@
 // (2) Prepended config.h header
 layout (location = 0) in flat uint in_cell_state_current;
 layout (location = 1) in flat uint in_cell_state_previous;
+layout (location = 2) in flat vec3 in_color;
 
 out vec4 out_color;
 
 void main() {
-#if CELL_STATES == 2
-    vec3 color = vec3(
-        float(!bool(in_cell_state_current) &&  bool(in_cell_state_previous)),
-        float( bool(in_cell_state_current) && !bool(in_cell_state_previous)),
-        float( bool(in_cell_state_current) &&  bool(in_cell_state_previous))
-    );
-#endif
-
-    out_color = vec4(color, 1.0);
+    out_color = vec4(in_color, 1.0);
 } 

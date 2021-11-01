@@ -225,20 +225,6 @@ __host__ __device__ u8 update_cell(u8* in, u8* out, int width, int height, int x
         state_count[in[neighbour_cell_index]] += 1;
     }
 
-    /* for (int rel_y = -1; rel_y <= 1; rel_y++) { */
-    /*     for (int rel_x = -1; rel_x <= 1; rel_x++) { */
-    /*         if (rel_x == 0 && rel_y == 0) { */
-    /*             continue; */
-    /*         } */
-
-    /*         int abs_x = x + rel_x; */
-    /*         int abs_y = y + rel_y; */
-    /*         int neighbourID = get_cell_index(width, height, abs_x, abs_y); */
-
-    /*         state_count[in[neighbourID]] += 1; */
-    /*     } */
-    /* } */
-
     int nextState = get_next_state(currentState, state_count);
     out[cellID] = nextState;
 
@@ -257,18 +243,6 @@ void life_cpu(u8* in, u8* out) {
             update_cell(in, out, GRID_WIDTH, GRID_HEIGHT, x, y);
         }
     }
-}
-
-// funkce pro zapis barvy pixelu do bitmapy, nova barva je odvozena ze stavu simulace
-__inline__ __device__ void stateToColor(u8 oldValue, u8 newValue, uchar4* bitmap, int bitmapId) {
-    uchar4 color;
-
-    color.x = (newValue==0 && oldValue==1) ? 255 : 0;
-    color.y = (newValue==1 && oldValue==0) ? 255 : 0;
-    color.z = (newValue==1 && oldValue==1) ? 255 : 0;
-    color.w = 0;
-
-    bitmap[bitmapId] = color;
 }
 
 __global__ void life_kernel(u8* in, u8* out) {
@@ -366,19 +340,20 @@ void initialize(int argc, char **argv) {
     init_draw(argc, argv, GRID_WIDTH, GRID_HEIGHT, handle_keys, idle_func);
 
     // alokovani mista pro bitmapu na GPU
-    CHECK_ERROR(cudaMalloc((void**) &(gpu_ruleset), 2 * 9 * sizeof(u8)));
+    CHECK_ERROR(cudaMalloc((void**) &(gpu_ruleset), get_ruleset_size() * sizeof(u8)));
 
-    cpu_ruleset = (u8*) malloc(2 * 9 * sizeof(u8));
-    cpu_grid_states_1 = (u8*) malloc(GRID_AREA * sizeof(u8));
-    cpu_grid_states_2 = (u8*) malloc(GRID_AREA * sizeof(u8));
-    cpu_grid_states_tmp = (u8*) malloc(GRID_AREA * sizeof(u8));
+    cpu_ruleset = (u8*) calloc(get_ruleset_size(), sizeof(u8));
+    cpu_grid_states_1 = (u8*) calloc(GRID_AREA, sizeof(u8));
+    cpu_grid_states_2 = (u8*) calloc(GRID_AREA, sizeof(u8));
+    cpu_grid_states_tmp = (u8*) calloc(GRID_AREA, sizeof(u8));
 
     srand(0);
 
     // inicializace pocatecniho stavu lifu
-    for (int i = 0; i < GRID_AREA; i++) {
-        cpu_grid_states_1[i] = (u8) (rand() % 2);
-    }
+    /* for (int i = 0; i < GRID_AREA; i++) { */
+    /*     cpu_grid_states_1[i] = (u8) (rand() % CELL_STATES); */
+    /* } */
+    cpu_grid_states_1[(GRID_HEIGHT / 2) * GRID_WIDTH + GRID_WIDTH / 2] = 1;
 
     CHECK_ERROR(cudaGraphicsMapResources(1, &gpu_cuda_grid_states_1, 0));
     CHECK_ERROR(cudaGraphicsMapResources(1, &gpu_cuda_grid_states_2, 0));
@@ -396,16 +371,12 @@ void initialize(int argc, char **argv) {
     CHECK_ERROR(cudaGraphicsUnmapResources(1, &gpu_cuda_grid_states_1, 0));
     CHECK_ERROR(cudaGraphicsUnmapResources(1, &gpu_cuda_grid_states_2, 0));
 
-    // nakopirovani tabulky novych stavu do konstantni pameti
-    u8 ruleset[2 * 9] = {
-        // currentState == 0:
-        0, 0, 0, 1, 0, 0, 0, 0, 0,
-        // currentState == 1:
-        0, 0, 1, 1, 0, 0, 0, 0, 0,
-    };
+    // Initialize ruleset. Keep first rule as 0.
+    for (i32 i = 1; i < get_ruleset_size(); i++) {
+        cpu_ruleset[i] = (u8) (rand() % CELL_STATES);
+    }
 
-    memcpy(cpu_ruleset, ruleset, 2 * 9 * sizeof(u8));
-    CHECK_ERROR(cudaMemcpy(gpu_ruleset, ruleset, 2 * 9 * sizeof(u8), cudaMemcpyHostToDevice));
+    CHECK_ERROR(cudaMemcpy(gpu_ruleset, cpu_ruleset, get_ruleset_size() * sizeof(u8), cudaMemcpyHostToDevice));
     CHECK_ERROR(cudaMemcpyToSymbol(device_gpu_ruleset, &gpu_ruleset, sizeof(u8*)));
 
     // vytvoreni struktur udalosti pro mereni casu

@@ -1,19 +1,22 @@
 #pragma once
 #include <GL/glew.h>
+#include <GL/gl.h>
+#include <GL/glu.h>
 #include <GL/freeglut.h>
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
 #include <vector>
+#include <time.h>
 #include "shaders.cuh"
 
 using namespace std;
 
-u32 vao;
-u32 vbo;
-u32 shader_vertex;
-u32 shader_fragment;
-u32 shader_program;
-vector<f32vec2> vertices;
+GLuint vao;
+GLuint vbo;
+GLuint shader_vertex;
+GLuint shader_fragment;
+GLuint shader_program;
+GLuint uniform_window_resolution;
 
 GLuint gpu_vbo_grid_states_1;
 GLuint gpu_vbo_grid_states_2;
@@ -49,6 +52,10 @@ __host__ void draw_image() {
     }
 
     glutSwapBuffers();
+
+#ifdef SLEEP_MS
+    msleep(SLEEP_MS);
+#endif
 }
 
 __host__ u32 create_shader(u8* shader_code, i32 shader_len, GLenum shader_type) {
@@ -71,10 +78,11 @@ __host__ u32 create_shader(u8* shader_code, i32 shader_len, GLenum shader_type) 
     glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
 
     if (!success) {
-        char infoLog[512];
-        GLsizei len;
-        glGetShaderInfoLog(shader_vertex, 512, &len, infoLog);
-        std::cout << "ERROR::SHADER::COMPILATION_FAILED: " << len << std::endl << infoLog << std::endl;
+        GLsizei info_log_len;
+        glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &info_log_len);
+        GLchar info_log[info_log_len];
+        glGetShaderInfoLog(shader, info_log_len, NULL, info_log);
+        printf("ERROR::SHADER::COMPILATION_FAILED: %s\n", info_log);
         exit(1);
     }
 
@@ -109,6 +117,12 @@ __host__ void delete_cuda_vbo(GLuint *vbo, struct cudaGraphicsResource *vbo_res)
     *vbo = 0;
 }
 
+void reshape_func(int width, int height) {
+    printf("Window size changed: %d, %d\n", width, height);
+    glViewport(0, 0, width, height);
+    glUniform2ui(uniform_window_resolution, width, height);
+}
+
 __host__ void init_draw(
         int argc,
         char **argv,
@@ -124,14 +138,11 @@ __host__ void init_draw(
     glutDisplayFunc(draw_image);
     glutKeyboardFunc(handle_keys);
     glutIdleFunc(idle_func);
+    glutReshapeFunc(reshape_func);
 
     glewInit();
 
     glDisable(GL_DEPTH_TEST);
-
-    vertices.push_back(make_f32vec2(-1.0, -1.0));
-    vertices.push_back(make_f32vec2( 1.0, -1.0));
-    vertices.push_back(make_f32vec2( 0.0,  1.0));
 
     glGenVertexArrays(1, &vao);
     glGenBuffers(1, &vbo);
@@ -156,6 +167,8 @@ __host__ void init_draw(
         std::cout << "ERROR::PROGRAM::LINK_FAILED\n" << infoLog << std::endl;
         exit(1);
     }
+
+    uniform_window_resolution = glGetUniformLocation(shader_program, "window_resolution");
 
     glUseProgram(shader_program);
     glDeleteShader(shader_vertex);
