@@ -132,8 +132,16 @@ __host__ void init_draw(
         void (idle_func)()
 ) {
     glutInit(&argc, argv);
+
+    u32 display_mode = GLUT_DOUBLE | GLUT_RGBA;
+
+    if (USE_MULTISAMPLING) {
+        display_mode |= GLUT_MULTISAMPLE;
+        glutSetOption(GLUT_MULTISAMPLE, MULTISAMPLING_SAMPLES);
+    }
+
     glutInitWindowSize(800, 800);
-    glutInitDisplayMode( GLUT_DOUBLE | GLUT_RGBA );
+    glutInitDisplayMode(display_mode);
     glutCreateWindow("Life Game");
     glutDisplayFunc(draw_image);
     glutKeyboardFunc(handle_keys);
@@ -143,6 +151,10 @@ __host__ void init_draw(
     glewInit();
 
     glDisable(GL_DEPTH_TEST);
+
+    if (USE_MULTISAMPLING) {
+        glEnable(GL_MULTISAMPLE);
+    }
 
     glGenVertexArrays(1, &vao);
     glGenBuffers(1, &vbo);

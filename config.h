@@ -36,6 +36,10 @@
 #define CPU_VERIFY IS_DEBUG
 // [bool] `true` to keep aspect ratio, `false` to stretch to window
 #define KEEP_ASPECT_RATIO true
+// [bool] `true` if multisampling should be enabled to fix "jagged" edges, `false` otherwise
+#define USE_MULTISAMPLING true
+// [uint] number of samples per pixel to use when multisampling is enabled
+#define MULTISAMPLING_SAMPLES 16
 // [float/uint] number of iterations per second
 #define FRAMERATE 2
 // [uint] number of milliseconds to wait between iterations (overriden by FRAMERATE)
