@@ -15,15 +15,15 @@
  **************************/
 
 // [uint] simulation grid width
-#define GRID_WIDTH  150
+#define GRID_WIDTH  200
 // [uint] simulation grid height
-#define GRID_HEIGHT 151
+#define GRID_HEIGHT 100
 // [enum] the shape of the grid's cells (square for Conway's GoL)
-#define GRID_GEOMETRY GRID_GEOMETRY_HEXAGON
+#define GRID_GEOMETRY GRID_GEOMETRY_TRIANGLE
 // [enum] which cells are considered in the neighbourhood (vertex for Conway's GoL)
-#define CELL_NEIGHBOURHOOD_TYPE CELL_NEIGHBOURHOOD_TYPE_VERTEX
+#define CELL_NEIGHBOURHOOD_TYPE CELL_NEIGHBOURHOOD_TYPE_EDGE
 // [uchar] number of states a cell can become (2 for Conway's GoL)
-#define CELL_STATES 3
+#define CELL_STATES 4
 
 // Conway's GoL:
 /* #define GRID_GEOMETRY GRID_GEOMETRY_SQUARE */
@@ -41,9 +41,15 @@
 // [uint] number of samples per pixel to use when multisampling is enabled
 #define MULTISAMPLING_SAMPLES 16
 // [float/uint] number of iterations per second
-#define FRAMERATE 2
+/* #define FRAMERATE 2 */
 // [uint] number of milliseconds to wait between iterations (overriden by FRAMERATE)
 /* #define SLEEP_MS 500 */
+// [uint] initial window width
+#define WINDOW_WIDTH 800
+// [uint] initial window height
+#define WINDOW_HEIGHT 800
+// [uint] max number of frames exported as PNG
+#define EXPORT_FRAMES 160
 
 /************************
  * END OF CONFIGURATION *

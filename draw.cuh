@@ -7,6 +7,7 @@
 #include <cuda_gl_interop.h>
 #include <vector>
 #include <time.h>
+#include <png.h>
 #include "shaders.cuh"
 
 using namespace std;
@@ -24,9 +25,45 @@ GLuint gpu_vbo_grid_states_2;
 struct cudaGraphicsResource* gpu_cuda_grid_states_1 = NULL;
 struct cudaGraphicsResource* gpu_cuda_grid_states_2 = NULL;
 
+u32 frame_index = 0;
+u32vec2 window_size = make_u32vec2(WINDOW_WIDTH, WINDOW_HEIGHT);
+
+#ifdef EXPORT_FRAMES
+__host__ void export_frame() {
+    if (frame_index >= EXPORT_FRAMES) {
+        return;
+    }
+
+    u8 buffer[window_size.x * window_size.y * 4 * sizeof(u8)];
+    glReadPixels(0, 0, window_size.x, window_size.y, GL_RGBA, GL_UNSIGNED_BYTE, buffer);
+
+    char* file_name;
+
+    if (asprintf(&file_name, "frame_%04u.png", frame_index) == -1) {
+        fprintf(stderr, "Could not format a string.\n");
+        exit(1);
+    }
+
+    png_image image;
+    image.version = PNG_IMAGE_VERSION;
+    image.width = window_size.x;
+    image.height = window_size.y;
+    image.format = PNG_FORMAT_RGBA;
+
+    png_image_write_to_file(&image, file_name, false, buffer, window_size.x * 4 * sizeof(u8), NULL);
+
+    free(file_name);
+    frame_index += 1;
+
+    if (frame_index >= EXPORT_FRAMES && EXPORT_FRAMES > 0) {
+        printf("Done exporting frames.\n");
+    }
+}
+#endif
+
 // vykresleni bitmapy v OpenGL
 __host__ void draw_image() {
-    glClearColor(0.0, 0.0, 0.0, 1.0);
+    glClearColor(0.0, 0.0, 0.0, 0.0);
     glClear(GL_COLOR_BUFFER_BIT);
 
     // Draw
@@ -50,6 +87,10 @@ __host__ void draw_image() {
         glBindVertexArray(vao);
         glDrawArraysInstanced(GL_TRIANGLE_FAN, 0, CELL_VERTICES, GRID_AREA);
     }
+
+#ifdef EXPORT_FRAMES
+    export_frame();
+#endif
 
     glutSwapBuffers();
 
@@ -119,6 +160,8 @@ __host__ void delete_cuda_vbo(GLuint *vbo, struct cudaGraphicsResource *vbo_res)
 
 void reshape_func(int width, int height) {
     printf("Window size changed: %d, %d\n", width, height);
+    window_size.x = width;
+    window_size.y = height;
     glViewport(0, 0, width, height);
     glUniform2ui(uniform_window_resolution, width, height);
 }
@@ -140,7 +183,7 @@ __host__ void init_draw(
         glutSetOption(GLUT_MULTISAMPLE, MULTISAMPLING_SAMPLES);
     }
 
-    glutInitWindowSize(800, 800);
+    glutInitWindowSize(WINDOW_WIDTH, WINDOW_HEIGHT);
     glutInitDisplayMode(display_mode);
     glutCreateWindow("Life Game");
     glutDisplayFunc(draw_image);
