@@ -97,6 +97,13 @@ __host__ void draw_image() {
 #ifdef SLEEP_MS
     msleep(SLEEP_MS);
 #endif
+
+#ifdef EXIT_AFTER_FRAMES
+    if (frame_index >= EXIT_AFTER_FRAMES) {
+        printf("Reached max number of frames, exiting.\n");
+        exit(0);
+    }
+#endif
 }
 
 __host__ u32 create_shader(u8* shader_code, i32 shader_len, GLenum shader_type) {
@@ -169,8 +176,6 @@ void reshape_func(int width, int height) {
 __host__ void init_draw(
         int argc,
         char **argv,
-        int width,
-        int height,
         void (handle_keys)(unsigned char key, int x, int y),
         void (idle_func)()
 ) {

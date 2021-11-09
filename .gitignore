@@ -1,6 +1,10 @@
 a.out
 shaders.cuh
+<<<<<<< Updated upstream
 **/*.png
 **/*.LOCAL
 **/*.LOCAL.*
 **/LOCAL
+=======
+**/*.nvvp
+>>>>>>> Stashed changes

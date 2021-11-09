@@ -50,6 +50,8 @@
 #define WINDOW_HEIGHT 800
 // [uint] max number of frames exported as PNG
 #define EXPORT_FRAMES 160
+#define PROMPT_TO_START false
+/* #define EXIT_AFTER_FRAMES 100 */
 
 /************************
  * END OF CONFIGURATION *
