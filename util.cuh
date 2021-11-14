@@ -102,11 +102,16 @@
 #define make_f64vec4(...) make_double4(__VA_ARGS__)
 
 // funkce pro osetreni chyb
-static inline void check_error(cudaError_t error, const char *file, int line) {
-  if (error != cudaSuccess) {
-    fprintf(stderr, "%s in %s at line %d\n", cudaGetErrorString(error), file, line);
-    exit(EXIT_FAILURE);
-  }
+static inline __host__ __device__ void check_error(cudaError_t error, const char *file, int line) {
+    if (error != cudaSuccess) {
+#ifdef __CUDA_ARCH__
+        printf("%s in %s at line %d\n", cudaGetErrorString(error), file, line);
+        assert(0);
+#else
+        fprintf(stderr, "%s in %s at line %d\n", cudaGetErrorString(error), file, line);
+        exit(EXIT_FAILURE);
+#endif
+    }
 }
 
 #define CHECK_ERROR(error) (check_error(error, __FILE__, __LINE__))
@@ -116,6 +121,16 @@ static inline void check_error(cudaError_t error, const char *file, int line) {
 #else
     #define IS_DEBUG true
 #endif
+
+#define IS_DEBUG_THREAD(thread_x, thread_y, block_x, block_y) (threadIdx.x == thread_x && threadIdx.y == thread_y && blockIdx.x == block_x && blockIdx.y == block_y)
+
+#define DEBUG_THREAD(thread_x, thread_y, block_x, block_y, ...)            \
+    do {                                                                   \
+        if (IS_DEBUG_THREAD(thread_x, thread_y, block_x, block_y)) {       \
+            printf("DEBUG_THREAD in %s on line %d: ", __FILE__, __LINE__); \
+            printf(__VA_ARGS__);                                           \
+        }                                                                  \
+    } while(false);
 
 int msleep(long msec) {
     struct timespec ts;

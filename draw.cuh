@@ -53,9 +53,8 @@ __host__ void export_frame() {
     png_image_write_to_file(&image, file_name, false, buffer, window_size.x * 4 * sizeof(u8), NULL);
 
     free(file_name);
-    frame_index += 1;
 
-    if (frame_index >= EXPORT_FRAMES && EXPORT_FRAMES > 0) {
+    if (frame_index + 1 >= EXPORT_FRAMES && EXPORT_FRAMES > 0) {
         printf("Done exporting frames.\n");
     }
 }
@@ -85,7 +84,11 @@ __host__ void draw_image() {
         glUseProgram(shader_program);
 
         glBindVertexArray(vao);
-        glDrawArraysInstanced(GL_TRIANGLE_FAN, 0, CELL_VERTICES, GRID_AREA);
+
+        // render each row separately, so that the pitch gap between aligned rows is skipped
+        for (i32 y = 0; y < GRID_HEIGHT; y++) {
+            glDrawArraysInstancedBaseInstance(GL_TRIANGLE_FAN, 0, CELL_VERTICES, GRID_WIDTH, y * GRID_PITCH);
+        }
     }
 
 #ifdef EXPORT_FRAMES
@@ -99,18 +102,20 @@ __host__ void draw_image() {
 #endif
 
 #ifdef EXIT_AFTER_FRAMES
-    if (frame_index >= EXIT_AFTER_FRAMES) {
+    if (frame_index + 1 >= EXIT_AFTER_FRAMES) {
         printf("Reached max number of frames, exiting.\n");
         exit(0);
     }
 #endif
+
+    frame_index += 1;
 }
 
 __host__ u32 create_shader(u8* shader_code, i32 shader_len, GLenum shader_type) {
     u32 shader = glCreateShader(shader_type);
     u8* config_h_ptr = config_h;
     u8* shader_sources[3] {
-        (u8*) "#version 450 core\n",
+        (u8*) "#version 460 core\n",
         config_h_ptr,
         shader_code,
     };
@@ -207,8 +212,8 @@ __host__ void init_draw(
     glGenVertexArrays(1, &vao);
     glGenBuffers(1, &vbo);
 
-    create_cuda_vbo(&gpu_vbo_grid_states_1, &gpu_cuda_grid_states_1, GRID_AREA * sizeof(u8), cudaGraphicsRegisterFlagsNone);
-    create_cuda_vbo(&gpu_vbo_grid_states_2, &gpu_cuda_grid_states_2, GRID_AREA * sizeof(u8), cudaGraphicsRegisterFlagsNone);
+    create_cuda_vbo(&gpu_vbo_grid_states_1, &gpu_cuda_grid_states_1, GRID_AREA_WITH_PITCH * sizeof(u8), cudaGraphicsRegisterFlagsNone);
+    create_cuda_vbo(&gpu_vbo_grid_states_2, &gpu_cuda_grid_states_2, GRID_AREA_WITH_PITCH * sizeof(u8), cudaGraphicsRegisterFlagsNone);
 
     shader_vertex = create_shader(shader_vert, shader_vert_len, GL_VERTEX_SHADER);
     shader_fragment = create_shader(shader_frag, shader_frag_len, GL_FRAGMENT_SHADER);

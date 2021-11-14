@@ -19,7 +19,9 @@ vec3 hsv2rgb(vec3 c) {
 }
 
 void main() {
-    ivec2 cell = ivec2(gl_InstanceID % GRID_WIDTH, gl_InstanceID / GRID_WIDTH);
+    int cell_index = gl_InstanceID + gl_BaseInstance;
+    uint grid_pitch; GET_GRID_PITCH(grid_pitch)
+    ivec2 cell = ivec2(cell_index % grid_pitch, cell_index / grid_pitch);
 
 #if GRID_GEOMETRY == GRID_GEOMETRY_SQUARE
     vec2[4] offsets_vertex = {
@@ -92,7 +94,7 @@ void main() {
     gl_Position = vec4(position, 1.0, 1.0);
 
     // Debug first cell
-    /* gl_Position.xyz *= float(gl_InstanceID == 0); */
+    /* gl_Position.xyz *= float(cell_index == 0); */
 
     out_cell_state_current = in_cell_state_current;
     out_cell_state_previous = in_cell_state_previous;

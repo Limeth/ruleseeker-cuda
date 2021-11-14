@@ -1,10 +1,8 @@
-a.out
+build-release
+build-debug
 shaders.cuh
-<<<<<<< Updated upstream
 **/*.png
 **/*.LOCAL
 **/*.LOCAL.*
 **/LOCAL
-=======
 **/*.nvvp
->>>>>>> Stashed changes
