@@ -334,12 +334,58 @@ __global__ void gpu_simulate_step_kernel_shared(u8* in_grid, u8* out_grid) {
      */
     __syncthreads();
 
+    // interpret `shared_data` as `u8*`, `u16*` and `u32*` based on the iteration of the parallel reduction
     i32 fit_index = threadIdx.x + threadIdx.y * BLOCK_LENGTH;
-    shared_fit_cells[fit_index] = (u8) fit;
+    u8* shared_fit_cells_u8 = shared_data;
+    u16* shared_fit_cells_u16 = (u16*) shared_data;
+    u32* shared_fit_cells_u32 = (u32*) shared_data;
 
-    // TODO: interpret `shared_data` as `u8*`, `u16*` and `u32*` based on the iteration of the parallel reduction
+    shared_fit_cells_u8[fit_index] = (u8) fit;
 
     __syncthreads();
+
+    i32 step = BLOCK_AREA / 2;
+    i32 i = 0;
+
+    #pragma unroll
+    while (step != 0) {
+        bool in_bounds = fit_index < step;
+
+        if (i == 0) {
+            u16 sum;
+
+            if (in_bounds) {
+                sum = shared_fit_cells_u8[fit_index] + shared_fit_cells_u8[fit_index + step];
+            }
+
+            __syncthreads();
+
+            if (in_bounds) {
+                shared_fit_cells_u16[fit_index] = sum;
+            }
+        } else if (i == 1) {
+            u32 sum;
+
+            if (in_bounds) {
+                sum = shared_fit_cells_u16[fit_index] + shared_fit_cells_u16[fit_index + step];
+            }
+
+            __syncthreads();
+
+            if (in_bounds) {
+                shared_fit_cells_u32[fit_index] = sum;
+            }
+        } else {
+            if (in_bounds) {
+                shared_fit_cells_u32[fit_index] += shared_fit_cells_u32[fit_index + step];
+            }
+        }
+
+        __syncthreads(); // synchronizace vláken po provedení každé fáze
+
+        step /= 2;
+        i++;
+    }
 }
 
  __global__ void gpu_simulate_step_kernel_noshared(u8* in_grid, u8* out_grid) {
