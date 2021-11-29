@@ -1,4 +1,5 @@
 #pragma once
+#include "util.cuh"
 #include <GL/glew.h>
 #include <GL/gl.h>
 #include <GL/glu.h>
@@ -9,6 +10,7 @@
 #include <time.h>
 #include <png.h>
 #include "shaders.cuh"
+#include "simulation.cuh"
 
 using namespace std;
 
@@ -19,14 +21,18 @@ GLuint shader_fragment;
 GLuint shader_program;
 GLuint uniform_window_resolution;
 
-GLuint gpu_vbo_grid_states_1;
-GLuint gpu_vbo_grid_states_2;
+simulation_t preview_simulation;
 
-struct cudaGraphicsResource* gpu_cuda_grid_states_1 = NULL;
-struct cudaGraphicsResource* gpu_cuda_grid_states_2 = NULL;
+/* GLuint gpu_vbo_grid_states_1; */
+/* GLuint gpu_vbo_grid_states_2; */
+
+/* struct cudaGraphicsResource* gpu_cuda_grid_states_1 = NULL; */
+/* struct cudaGraphicsResource* gpu_cuda_grid_states_2 = NULL; */
 
 u32 frame_index = 0;
 u32vec2 window_size = make_u32vec2(WINDOW_WIDTH, WINDOW_HEIGHT);
+
+
 
 #ifdef EXPORT_FRAMES
 __host__ void export_frame() {
@@ -72,12 +78,12 @@ __host__ void draw_image() {
         /* glBufferData(GL_ARRAY_BUFFER, vertices.size() * sizeof(f32vec2), &vertices[0], GL_STATIC_DRAW); */
 
         glEnableVertexAttribArray(0);
-        glBindBuffer(GL_ARRAY_BUFFER, gpu_vbo_grid_states_1);
+        glBindBuffer(GL_ARRAY_BUFFER, preview_simulation.gpu_states.gpu_states.opengl.gpu_vbo_grid_states_1);
         glVertexAttribIPointer(0, 1, GL_UNSIGNED_BYTE, sizeof(u8), (void*) 0);
         glVertexAttribDivisor(0, 1);
 
         glEnableVertexAttribArray(1);
-        glBindBuffer(GL_ARRAY_BUFFER, gpu_vbo_grid_states_2);
+        glBindBuffer(GL_ARRAY_BUFFER, preview_simulation.gpu_states.gpu_states.opengl.gpu_vbo_grid_states_2);
         glVertexAttribIPointer(1, 1, GL_UNSIGNED_BYTE, sizeof(u8), (void*) 0);
         glVertexAttribDivisor(1, 1);
 
@@ -212,8 +218,10 @@ __host__ void init_draw(
     glGenVertexArrays(1, &vao);
     glGenBuffers(1, &vbo);
 
-    create_cuda_vbo(&gpu_vbo_grid_states_1, &gpu_cuda_grid_states_1, GRID_AREA_WITH_PITCH * sizeof(u8), cudaGraphicsRegisterFlagsNone);
-    create_cuda_vbo(&gpu_vbo_grid_states_2, &gpu_cuda_grid_states_2, GRID_AREA_WITH_PITCH * sizeof(u8), cudaGraphicsRegisterFlagsNone);
+    preview_simulation.gpu_states.type = STATES_TYPE_OPENGL;
+
+    create_cuda_vbo(&preview_simulation.gpu_states.gpu_states.opengl.gpu_vbo_grid_states_1, &preview_simulation.gpu_states.gpu_states.opengl.gpu_cuda_grid_states_1, GRID_AREA_WITH_PITCH * sizeof(u8), cudaGraphicsRegisterFlagsNone);
+    create_cuda_vbo(&preview_simulation.gpu_states.gpu_states.opengl.gpu_vbo_grid_states_2, &preview_simulation.gpu_states.gpu_states.opengl.gpu_cuda_grid_states_2, GRID_AREA_WITH_PITCH * sizeof(u8), cudaGraphicsRegisterFlagsNone);
 
     shader_vertex = create_shader(shader_vert, shader_vert_len, GL_VERTEX_SHADER);
     shader_fragment = create_shader(shader_frag, shader_frag_len, GL_FRAGMENT_SHADER);

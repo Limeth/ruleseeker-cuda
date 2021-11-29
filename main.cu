@@ -7,30 +7,9 @@
 #include "util.cuh"
 #include "draw.cuh"
 #include "math.cuh"
+#include "simulation.cuh"
 
 using namespace std;
-
-// Capitalised because they are effectively constant
-int CPU_CELL_NEIGHBOURHOOD_COMBINATIONS = -1;
-__constant__ int GPU_CELL_NEIGHBOURHOOD_COMBINATIONS = -1;
-int CPU_RULESET_SIZE = -1;
-__constant__ int GPU_RULESET_SIZE = -1;
-
-__inline__ __host__ __device__ int get_cell_neighbourhood_combinations() {
-#ifdef __CUDA_ARCH__
-    return GPU_CELL_NEIGHBOURHOOD_COMBINATIONS;
-#else
-    return CPU_CELL_NEIGHBOURHOOD_COMBINATIONS;
-#endif
-}
-
-__inline__ __host__ __device__ int get_ruleset_size() {
-#ifdef __CUDA_ARCH__
-    return GPU_RULESET_SIZE;
-#else
-    return CPU_RULESET_SIZE;
-#endif
-}
 
 __inline__ __host__ __device__ void get_neighbours(i32 x, i32 y, i32vec2 neighbours[CELL_NEIGHBOURHOOD_SIZE]) {
 #if GRID_GEOMETRY == GRID_GEOMETRY_SQUARE
@@ -158,25 +137,21 @@ void print_configuration() {
 /*     } */
 }
 
-__device__ u8* device_gpu_ruleset;
-u8* gpu_ruleset = NULL;
-u8* cpu_ruleset = NULL;
+/* __device__ u8* device_gpu_ruleset; */
+/* u8* gpu_ruleset = NULL; */
+/* u8* cpu_ruleset = NULL; */
 
-__inline__ __host__ __device__ u8* get_ruleset() {
-#ifdef __CUDA_ARCH__
-    return device_gpu_ruleset;
-#else
-    return cpu_ruleset;
-#endif
-}
+/* __inline__ __host__ __device__ u8* get_ruleset() { */
+/* #ifdef __CUDA_ARCH__ */
+/*     return device_gpu_ruleset; */
+/* #else */
+/*     return cpu_ruleset; */
+/* #endif */
+/* } */
 
-// nahrazeno CUDA zdroji
-/* __device__ u8* gpu_grid_states_1 = NULL; */
-/* __device__ u8* gpu_grid_states_2 = NULL; */
-
-u8 *cpu_grid_states_1 = NULL;
-u8 *cpu_grid_states_2 = NULL;
-u8 *cpu_grid_states_tmp = NULL;
+/* u8 *cpu_grid_states_1 = NULL; */
+/* u8 *cpu_grid_states_2 = NULL; */
+/* u8 *cpu_grid_states_tmp = NULL; */
 
 // udalosti pro mereni casu v CUDA
 cudaEvent_t start, stop;
@@ -206,9 +181,7 @@ __inline__ __host__ __device__ bool cell_state_fit(u8 state_prev, u8 state_next)
 #endif
 }
 
-__host__ __device__ u8 get_next_state(u8 current_state, u8* neighbours) {
-    u8* ruleset = get_ruleset();
-
+__host__ __device__ u8 get_next_state(u8 current_state, u8* neighbours, u8* ruleset) {
     // In debug mode, validate the `current_state` argument.
     assert(current_state < CELL_STATES);
 
@@ -235,7 +208,7 @@ __host__ __device__ u8 get_next_state(u8 current_state, u8* neighbours) {
     return ruleset[index];
 }
 
-__host__ __device__ bool update_cell(u8* in_grid, u8* out_grid, i32 x, i32 y) {
+__host__ __device__ bool update_cell(u8* in_grid, u8* out_grid, u8* ruleset, i32 x, i32 y) {
     i32 cell_index = get_cell_index(x, y);
     u8 current_state = in_grid[cell_index];
     i32vec2 neighbours[CELL_NEIGHBOURHOOD_SIZE];
@@ -252,13 +225,13 @@ __host__ __device__ bool update_cell(u8* in_grid, u8* out_grid, i32 x, i32 y) {
         state_count[in_grid[neighbour_cell_index]] += 1;
     }
 
-    u8 next_state = get_next_state(current_state, state_count);
+    u8 next_state = get_next_state(current_state, state_count, ruleset);
     out_grid[cell_index] = next_state;
 
     return cell_state_fit(current_state, next_state);
 }
 
-__device__ bool update_cell_shared(u8* in_subgrid_shared, u8* out_grid, i32 x_global, i32 y_global, i32 x_shared, i32 y_shared) {
+__device__ bool update_cell_shared(u8* in_subgrid_shared, u8* out_grid, u8* ruleset, i32 x_global, i32 y_global, i32 x_shared, i32 y_shared) {
     i32 cell_index_shared = get_cell_index_shared(x_shared, y_shared);
     i32 cell_index_global = get_cell_index(x_global, y_global);
     u8 current_state = in_subgrid_shared[cell_index_shared];
@@ -276,7 +249,7 @@ __device__ bool update_cell_shared(u8* in_subgrid_shared, u8* out_grid, i32 x_gl
         state_count[neighbour_state] += 1;
     }
 
-    u8 next_state = get_next_state(current_state, state_count);
+    u8 next_state = get_next_state(current_state, state_count, ruleset);
     out_grid[cell_index_global] = next_state;
 
     return cell_state_fit(current_state, next_state);
@@ -288,15 +261,15 @@ __device__ bool update_cell_shared(u8* in_subgrid_shared, u8* out_grid, i32 x_gl
  *  width - sirka simulacni mrizky
  *  height - vyska simulacni mrizky
  */
-__host__ void cpu_simulate_step(u8* in_grid, u8* out_grid) {
+__host__ void cpu_simulate_step(u8* in_grid, u8* out_grid, u8* ruleset) {
     for (int y = 0; y < GRID_HEIGHT; y++) {
         for (int x = 0; x < GRID_WIDTH; x++) {
-            update_cell(in_grid, out_grid, x, y);
+            update_cell(in_grid, out_grid, ruleset, x, y);
         }
     }
 }
 
-__global__ void gpu_simulate_step_kernel_shared(u8* in_grid, u8* out_grid) {
+__global__ void gpu_simulate_step_kernel_shared(u8* in_grid, u8* out_grid, u8* ruleset) {
     __shared__ u8 shared_data[SHARED_SUBGRID_AREA];
 
     // load shared_subgrid
@@ -325,7 +298,7 @@ __global__ void gpu_simulate_step_kernel_shared(u8* in_grid, u8* out_grid) {
     bool fit = write;
 
     if (!write) {
-        fit = update_cell_shared(shared_data, out_grid, x, y, x_shared, y_shared);
+        fit = update_cell_shared(shared_data, out_grid, ruleset, x, y, x_shared, y_shared);
     }
 
     /*
@@ -388,14 +361,14 @@ __global__ void gpu_simulate_step_kernel_shared(u8* in_grid, u8* out_grid) {
     }
 }
 
- __global__ void gpu_simulate_step_kernel_noshared(u8* in_grid, u8* out_grid) {
+__global__ void gpu_simulate_step_kernel_noshared(u8* in_grid, u8* out_grid, u8* ruleset) {
     i32 x = threadIdx.x + blockIdx.x * BLOCK_LENGTH;
     i32 y = threadIdx.y + blockIdx.y * BLOCK_LENGTH;
 
     if (x < GRID_WIDTH && y < GRID_HEIGHT) {
-        update_cell(in_grid, out_grid, x, y);
+        update_cell(in_grid, out_grid, ruleset, x, y);
     }
- }
+}
 
 void simulate_multiple_steps() {
 
@@ -405,14 +378,10 @@ void simulate_multiple_steps() {
     dim3 blocks(GRID_WIDTH_IN_BLOCKS, GRID_HEIGHT_IN_BLOCKS);
     dim3 threads(BLOCK_LENGTH, BLOCK_LENGTH);
 
-    CHECK_ERROR(cudaGraphicsMapResources(1, &gpu_cuda_grid_states_1, 0));
-    CHECK_ERROR(cudaGraphicsMapResources(1, &gpu_cuda_grid_states_2, 0));
-
     u8* gpu_grid_states_1 = NULL;
     u8* gpu_grid_states_2 = NULL;
 
-    CHECK_ERROR(cudaGraphicsResourceGetMappedPointer((void**) &gpu_grid_states_1, NULL, gpu_cuda_grid_states_1));
-    CHECK_ERROR(cudaGraphicsResourceGetMappedPointer((void**) &gpu_grid_states_2, NULL, gpu_cuda_grid_states_2));
+    simulation_gpu_states_map(&preview_simulation, &gpu_grid_states_1, &gpu_grid_states_2);
 
     // ulozeni pocatecniho casu
     CHECK_ERROR(cudaEventRecord(start, 0));
@@ -420,13 +389,13 @@ void simulate_multiple_steps() {
     // aktualizace simulace + vygenerovani bitmapy pro zobrazeni stavu simulace
     for (i32 i = 0; i < STEPS; i++) {
         if (USE_SHARED_MEMORY) {
-            gpu_simulate_step_kernel_shared<<<blocks, threads>>>(gpu_grid_states_1, gpu_grid_states_2);
+            gpu_simulate_step_kernel_shared<<<blocks, threads>>>(gpu_grid_states_1, gpu_grid_states_2, preview_simulation.gpu_ruleset);
         } else {
-            gpu_simulate_step_kernel_noshared<<<blocks, threads>>>(gpu_grid_states_1, gpu_grid_states_2);
+            gpu_simulate_step_kernel_noshared<<<blocks, threads>>>(gpu_grid_states_1, gpu_grid_states_2, preview_simulation.gpu_ruleset);
         }
 
-        swap(gpu_vbo_grid_states_1, gpu_vbo_grid_states_2);
-        swap(gpu_cuda_grid_states_1, gpu_cuda_grid_states_2);
+        swap(preview_simulation.gpu_states.gpu_states.opengl.gpu_vbo_grid_states_1, preview_simulation.gpu_states.gpu_states.opengl.gpu_vbo_grid_states_2);
+        swap(preview_simulation.gpu_states.gpu_states.opengl.gpu_cuda_grid_states_1, preview_simulation.gpu_states.gpu_states.opengl.gpu_cuda_grid_states_2);
         swap(gpu_grid_states_1, gpu_grid_states_2);
     }
 
@@ -445,11 +414,11 @@ void simulate_multiple_steps() {
 
     for (i32 i = 0; i < STEPS; i++) {
         // krok simulace life game na CPU
-        cpu_simulate_step(cpu_grid_states_1, cpu_grid_states_2);
-        swap(cpu_grid_states_1, cpu_grid_states_2);
+        cpu_simulate_step(preview_simulation.cpu_grid_states_1, preview_simulation.cpu_grid_states_2, preview_simulation.cpu_ruleset);
+        swap(preview_simulation.cpu_grid_states_1, preview_simulation.cpu_grid_states_2);
     }
 
-    cudaMemcpy(cpu_grid_states_tmp, gpu_grid_states_1, GRID_AREA_WITH_PITCH * sizeof(u8), cudaMemcpyDeviceToHost);
+    cudaMemcpy(preview_simulation.cpu_grid_states_tmp, gpu_grid_states_1, GRID_AREA_WITH_PITCH * sizeof(u8), cudaMemcpyDeviceToHost);
 
     int diffs = 0;
 
@@ -458,7 +427,7 @@ void simulate_multiple_steps() {
         for (i32 x = 0; x < GRID_WIDTH; x++) {
             i32 cell_index = get_cell_index(x, y);
 
-            if (cpu_grid_states_1[cell_index] != cpu_grid_states_tmp[cell_index]) {
+            if (preview_simulation.cpu_grid_states_1[cell_index] != preview_simulation.cpu_grid_states_tmp[cell_index]) {
                 diffs++;
             }
         }
@@ -468,9 +437,7 @@ void simulate_multiple_steps() {
         std::cout << "CHYBA: " << diffs << " rozdily mezi CPU & GPU simulacni mrizkou" << std::endl;
 #endif
 
-    CHECK_ERROR(cudaGraphicsUnmapResources(1, &gpu_cuda_grid_states_1, 0));
-    CHECK_ERROR(cudaGraphicsUnmapResources(1, &gpu_cuda_grid_states_2, 0));
-
+    simulation_gpu_states_unmap(&preview_simulation);
 }
 
 // called every frame
@@ -521,45 +488,11 @@ void ruleset_load_alloc(u8** ruleset, char* filename) {
 // inicializace CUDA - alokace potrebnych dat a vygenerovani pocatecniho stavu lifu
 void initialize(int argc, char **argv) {
     init_draw(argc, argv, handle_keys, idle_func);
-
-    // alokovani mista pro bitmapu na GPU
-    CHECK_ERROR(cudaMalloc((void**) &(gpu_ruleset), get_ruleset_size() * sizeof(u8)));
-
-    cpu_ruleset = (u8*) calloc(get_ruleset_size(), sizeof(u8));
-    cpu_grid_states_1 = (u8*) calloc(GRID_AREA_WITH_PITCH, sizeof(u8));
-    cpu_grid_states_2 = (u8*) calloc(GRID_AREA_WITH_PITCH, sizeof(u8));
-    cpu_grid_states_tmp = (u8*) calloc(GRID_AREA_WITH_PITCH, sizeof(u8));
-
     srand(0);
 
-    /* for (int i = 0; i < GRID_AREA; i++) { */
-    /*     cpu_grid_states_1[i] = (u8) (rand() % CELL_STATES); */
-    /* } */
-    cpu_grid_states_1[(GRID_HEIGHT / 2) * GRID_PITCH + GRID_WIDTH / 2] = 1;
-
-    CHECK_ERROR(cudaGraphicsMapResources(1, &gpu_cuda_grid_states_1, 0));
-    CHECK_ERROR(cudaGraphicsMapResources(1, &gpu_cuda_grid_states_2, 0));
-
-    u8* gpu_grid_states_1 = NULL;
-    u8* gpu_grid_states_2 = NULL;
-
-    CHECK_ERROR(cudaGraphicsResourceGetMappedPointer((void**) &gpu_grid_states_1, NULL, gpu_cuda_grid_states_1));
-    CHECK_ERROR(cudaGraphicsResourceGetMappedPointer((void**) &gpu_grid_states_2, NULL, gpu_cuda_grid_states_2));
-
-    // prekopirovani pocatecniho stavu do GPU
-    cudaMemcpy(gpu_grid_states_1, cpu_grid_states_1, GRID_AREA_WITH_PITCH * sizeof(u8), cudaMemcpyHostToDevice);
-    cudaMemcpy(gpu_grid_states_2, cpu_grid_states_1, GRID_AREA_WITH_PITCH * sizeof(u8), cudaMemcpyHostToDevice);
-
-    CHECK_ERROR(cudaGraphicsUnmapResources(1, &gpu_cuda_grid_states_1, 0));
-    CHECK_ERROR(cudaGraphicsUnmapResources(1, &gpu_cuda_grid_states_2, 0));
-
-    // Initialize ruleset. Keep first rule as 0.
-    for (i32 i = 1; i < get_ruleset_size(); i++) {
-        cpu_ruleset[i] = (u8) (rand() % CELL_STATES);
+    if (preview_simulation.gpu_states.type != STATES_TYPE_UNDEF) {
+        simulation_init(&preview_simulation);
     }
-
-    CHECK_ERROR(cudaMemcpy(gpu_ruleset, cpu_ruleset, get_ruleset_size() * sizeof(u8), cudaMemcpyHostToDevice));
-    CHECK_ERROR(cudaMemcpyToSymbol(device_gpu_ruleset, &gpu_ruleset, sizeof(u8*)));
 
     // vytvoreni struktur udalosti pro mereni casu
     CHECK_ERROR(cudaEventCreate( &start ));
@@ -568,14 +501,7 @@ void initialize(int argc, char **argv) {
 
 // funkce volana pri ukonceni aplikace, uvolni vsechy prostredky alokovane v CUDA 
 void finalize(void) {
-    // uvolneni bitmapy - na CPU i GPU
-    cudaFree(gpu_ruleset);
-
-    // uvolneni simulacnich mrizek pro CPU variantu lifu
-    free(cpu_ruleset);
-    free(cpu_grid_states_1);
-    free(cpu_grid_states_2);
-    free(cpu_grid_states_tmp);
+    simulation_free(&preview_simulation);
 
     // zruseni struktur udalosti
     CHECK_ERROR(cudaEventDestroy( start ));
