@@ -62,10 +62,10 @@ __inline__ __host__ __device__ int get_ruleset_size() {
 #endif
 }
 
-void simulation_gpu_states_map(simulation_t* simulation, u8** gpu_grid_states_1, u8** gpu_grid_states_2) {
+void simulation_gpu_states_map(simulation_t* simulation, cudaStream_t stream, u8** gpu_grid_states_1, u8** gpu_grid_states_2) {
     if (simulation->gpu_states.type == STATES_TYPE_OPENGL) {
-        CHECK_ERROR(cudaGraphicsMapResources(1, &simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_1, 0));
-        CHECK_ERROR(cudaGraphicsMapResources(1, &simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_2, 0));
+        CHECK_ERROR(cudaGraphicsMapResources(1, &simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_1, stream));
+        CHECK_ERROR(cudaGraphicsMapResources(1, &simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_2, stream));
         CHECK_ERROR(cudaGraphicsResourceGetMappedPointer((void**) gpu_grid_states_1, NULL, simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_1));
         CHECK_ERROR(cudaGraphicsResourceGetMappedPointer((void**) gpu_grid_states_2, NULL, simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_2));
     } else if (simulation->gpu_states.type == STATES_TYPE_CUDA) {
@@ -77,10 +77,10 @@ void simulation_gpu_states_map(simulation_t* simulation, u8** gpu_grid_states_1,
     }
 }
 
-void simulation_gpu_states_unmap(simulation_t* simulation) {
+void simulation_gpu_states_unmap(simulation_t* simulation, cudaStream_t stream) {
     if (simulation->gpu_states.type == STATES_TYPE_OPENGL) {
-        CHECK_ERROR(cudaGraphicsUnmapResources(1, &simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_1, 0));
-        CHECK_ERROR(cudaGraphicsUnmapResources(1, &simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_2, 0));
+        CHECK_ERROR(cudaGraphicsUnmapResources(1, &simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_1, stream));
+        CHECK_ERROR(cudaGraphicsUnmapResources(1, &simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_2, stream));
     } else if (simulation->gpu_states.type == STATES_TYPE_CUDA) {
         // noop
     } else {

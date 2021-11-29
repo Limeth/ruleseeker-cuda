@@ -78,7 +78,7 @@
 // [uint] execution block width and height
 #define BLOCK_LENGTH 16
 // [bool] whether to verify the GPU simulation with an equivalent CPU simulation
-#define CPU_VERIFY IS_DEBUG
+#define CPU_VERIFY false
 // [bool] `true` to keep aspect ratio, `false` to stretch to window
 #define KEEP_ASPECT_RATIO true
 // [bool] `true` if multisampling should be enabled to fix "jagged" edges, `false` otherwise

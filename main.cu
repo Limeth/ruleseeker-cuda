@@ -130,29 +130,11 @@ void print_configuration() {
     printf("\tshared_subgrid_area: %d\n", SHARED_SUBGRID_AREA);
     printf("\tshared_subgrid_load_iterations: %d\n", SHARED_SUBGRID_LOAD_ITERATIONS);
     printf("\n");
-
-/*     if (GRID_AREA >= (1l << 16)) { */
-/*         fprintf(stderr, "Grid size (%d) exceeds max value (%d).\n", GRID_AREA, (1l << 16)); */
-/*         exit(1); */
-/*     } */
 }
 
-/* __device__ u8* device_gpu_ruleset; */
-/* u8* gpu_ruleset = NULL; */
-/* u8* cpu_ruleset = NULL; */
+cudaStream_t stream1;
 
-/* __inline__ __host__ __device__ u8* get_ruleset() { */
-/* #ifdef __CUDA_ARCH__ */
-/*     return device_gpu_ruleset; */
-/* #else */
-/*     return cpu_ruleset; */
-/* #endif */
-/* } */
-
-/* u8 *cpu_grid_states_1 = NULL; */
-/* u8 *cpu_grid_states_2 = NULL; */
-/* u8 *cpu_grid_states_tmp = NULL; */
-
+// TODO: should be created per-stream
 // udalosti pro mereni casu v CUDA
 cudaEvent_t start, stop;
 
@@ -397,7 +379,7 @@ __global__ void gpu_simulate_step_kernel_noshared(u8* in_grid, u8* out_grid, u8*
     atomicAdd(&fit_cells_block_sums[block_index_1d], (u32) fit);
 }
 
-void simulate_multiple_steps() {
+void simulate_multiple_steps(simulation_t* simulation, cudaStream_t stream) {
     const i32 STEPS = 1;
 
     // grid and block dimensions
@@ -407,26 +389,26 @@ void simulate_multiple_steps() {
     u8* gpu_grid_states_1 = NULL;
     u8* gpu_grid_states_2 = NULL;
 
-    simulation_gpu_states_map(&preview_simulation, &gpu_grid_states_1, &gpu_grid_states_2);
+    simulation_gpu_states_map(simulation, stream, &gpu_grid_states_1, &gpu_grid_states_2);
 
     // ulozeni pocatecniho casu
-    CHECK_ERROR(cudaEventRecord(start, 0));
+    CHECK_ERROR(cudaEventRecord(start, stream));
 
     // aktualizace simulace + vygenerovani bitmapy pro zobrazeni stavu simulace
     for (i32 i = 0; i < STEPS; i++) {
         if (USE_SHARED_MEMORY) {
-            gpu_simulate_step_kernel_shared<<<blocks, threads>>>(gpu_grid_states_1, gpu_grid_states_2, preview_simulation.gpu_ruleset, preview_simulation.gpu_fit_cells_block_sums);
+            gpu_simulate_step_kernel_shared<<<blocks, threads, 0, stream>>>(gpu_grid_states_1, gpu_grid_states_2, simulation->gpu_ruleset, simulation->gpu_fit_cells_block_sums);
         } else {
-            gpu_simulate_step_kernel_noshared<<<blocks, threads>>>(gpu_grid_states_1, gpu_grid_states_2, preview_simulation.gpu_ruleset, preview_simulation.gpu_fit_cells_block_sums);
+            gpu_simulate_step_kernel_noshared<<<blocks, threads, 0, stream>>>(gpu_grid_states_1, gpu_grid_states_2, simulation->gpu_ruleset, simulation->gpu_fit_cells_block_sums);
         }
 
-        swap(preview_simulation.gpu_states.gpu_states.opengl.gpu_vbo_grid_states_1, preview_simulation.gpu_states.gpu_states.opengl.gpu_vbo_grid_states_2);
-        swap(preview_simulation.gpu_states.gpu_states.opengl.gpu_cuda_grid_states_1, preview_simulation.gpu_states.gpu_states.opengl.gpu_cuda_grid_states_2);
+        swap(simulation->gpu_states.gpu_states.opengl.gpu_vbo_grid_states_1, simulation->gpu_states.gpu_states.opengl.gpu_vbo_grid_states_2);
+        swap(simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_1, simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_2);
         swap(gpu_grid_states_1, gpu_grid_states_2);
     }
 
     // ulozeni casu ukonceni simulace
-    CHECK_ERROR(cudaEventRecord(stop, 0));
+    CHECK_ERROR(cudaEventRecord(stop, stream));
     CHECK_ERROR(cudaEventSynchronize(stop));
 
     float elapsedTime;
@@ -444,14 +426,16 @@ void simulate_multiple_steps() {
 
     for (i32 i = 0; i < STEPS; i++) {
         // krok simulace life game na CPU
-        cpu_simulate_step(preview_simulation.cpu_grid_states_1, preview_simulation.cpu_grid_states_2, preview_simulation.cpu_ruleset, &fit_cells_block_sum_expected);
-        swap(preview_simulation.cpu_grid_states_1, preview_simulation.cpu_grid_states_2);
+        cpu_simulate_step(simulation->cpu_grid_states_1, simulation->cpu_grid_states_2, simulation->cpu_ruleset, &fit_cells_block_sum_expected);
+        swap(simulation->cpu_grid_states_1, simulation->cpu_grid_states_2);
     }
 
-    cudaMemcpy(preview_simulation.cpu_grid_states_tmp, gpu_grid_states_1, GRID_AREA_WITH_PITCH * sizeof(u8), cudaMemcpyDeviceToHost);
+    cudaMemcpyAsync(simulation->cpu_grid_states_tmp, gpu_grid_states_1, GRID_AREA_WITH_PITCH * sizeof(u8), cudaMemcpyDeviceToHost, stream);
 
     // compute `fit_cells_block_sum_actual`
-    cudaMemcpy(fit_cells_block_sums, preview_simulation.gpu_fit_cells_block_sums, GRID_AREA_IN_BLOCKS * sizeof(u32), cudaMemcpyDeviceToHost);
+    cudaMemcpyAsync(fit_cells_block_sums, simulation->gpu_fit_cells_block_sums, GRID_AREA_IN_BLOCKS * sizeof(u32), cudaMemcpyDeviceToHost, stream);
+
+    cudaStreamSynchronize(stream);
 
     for (i32 i = 0; i < GRID_AREA_IN_BLOCKS; i++) {
         fit_cells_block_sum_actual += fit_cells_block_sums[i];
@@ -469,7 +453,7 @@ void simulate_multiple_steps() {
         for (i32 x = 0; x < GRID_WIDTH; x++) {
             i32 cell_index = get_cell_index(x, y);
 
-            if (preview_simulation.cpu_grid_states_1[cell_index] != preview_simulation.cpu_grid_states_tmp[cell_index]) {
+            if (simulation->cpu_grid_states_1[cell_index] != simulation->cpu_grid_states_tmp[cell_index]) {
                 diffs++;
             }
         }
@@ -480,12 +464,12 @@ void simulate_multiple_steps() {
     }
 #endif
 
-    simulation_gpu_states_unmap(&preview_simulation);
+    simulation_gpu_states_unmap(&preview_simulation, stream);
 }
 
 // called every frame
 void idle_func() {
-    simulate_multiple_steps();
+    simulate_multiple_steps(&preview_simulation, stream1);
     glutPostRedisplay();
 }
 
@@ -536,6 +520,8 @@ void initialize(int argc, char **argv) {
     if (preview_simulation.gpu_states.type != STATES_TYPE_UNDEF) {
         simulation_init(&preview_simulation);
     }
+
+    CHECK_ERROR(cudaStreamCreateWithFlags(&stream1, cudaStreamNonBlocking));
 
     // vytvoreni struktur udalosti pro mereni casu
     CHECK_ERROR(cudaEventCreate( &start ));
