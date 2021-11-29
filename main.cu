@@ -256,20 +256,31 @@ __device__ bool update_cell_shared(u8* in_subgrid_shared, u8* out_grid, u8* rule
 }
 
 /* funkce zajistujici aktualizaci simulace - verze pro CPU
- *  in_grid - vstupni simulacni mrizka
- *  out_grid - vystupni simulacni mrizka
- *  width - sirka simulacni mrizky
- *  height - vyska simulacni mrizky
+ *   in_grid - vstupni simulacni mrizka
+ *   out_grid - vystupni simulacni mrizka
+ *   width - sirka simulacni mrizky
+ *   height - vyska simulacni mrizky
+ *   fit_cells_block_sum - pointer to a single counter of fit cells
  */
-__host__ void cpu_simulate_step(u8* in_grid, u8* out_grid, u8* ruleset) {
+__host__ void cpu_simulate_step(u8* in_grid, u8* out_grid, u8* ruleset, u32* fit_cells_block_sum) {
+    *fit_cells_block_sum = 0;
+
     for (int y = 0; y < GRID_HEIGHT; y++) {
         for (int x = 0; x < GRID_WIDTH; x++) {
-            update_cell(in_grid, out_grid, ruleset, x, y);
+            bool fit = update_cell(in_grid, out_grid, ruleset, x, y);
+            *fit_cells_block_sum += (u32) fit;
         }
     }
 }
 
-__global__ void gpu_simulate_step_kernel_shared(u8* in_grid, u8* out_grid, u8* ruleset) {
+/* funkce zajistujici aktualizaci simulace - verze pro CPU
+ *   in_grid - vstupni simulacni mrizka
+ *   out_grid - vystupni simulacni mrizka
+ *   width - sirka simulacni mrizky
+ *   height - vyska simulacni mrizky
+ *   fit_cells_block_sum - pointer to counters of fit cells, one per block
+ */
+__global__ void gpu_simulate_step_kernel_shared(u8* in_grid, u8* out_grid, u8* ruleset, u32* fit_cells_block_sums) {
     __shared__ u8 shared_data[SHARED_SUBGRID_AREA];
 
     // load shared_subgrid
@@ -294,12 +305,15 @@ __global__ void gpu_simulate_step_kernel_shared(u8* in_grid, u8* out_grid, u8* r
     i32 y = threadIdx.y + blockIdx.y * BLOCK_LENGTH;
     i32 x_shared = threadIdx.x + SHARED_SUBGRID_MARGIN;
     i32 y_shared = threadIdx.y + SHARED_SUBGRID_MARGIN;
-    bool write = x < GRID_WIDTH && y < GRID_HEIGHT;
-    bool fit = write;
+    bool fit = false;
 
-    if (!write) {
+    if (x < GRID_WIDTH && y < GRID_HEIGHT) {
         fit = update_cell_shared(shared_data, out_grid, ruleset, x, y, x_shared, y_shared);
     }
+
+    // initialize fit_cells_block_sum to 0
+    i32 block_index_1d = blockIdx.x + blockIdx.y * gridDim.x;
+    fit_cells_block_sums[block_index_1d] = 0;
 
     /*
     Until now, `shared_data` was used for input states.
@@ -359,19 +373,31 @@ __global__ void gpu_simulate_step_kernel_shared(u8* in_grid, u8* out_grid, u8* r
         step /= 2;
         i++;
     }
+
+    // No need to synchronize, that is done after each iteration of the preceding loop.
+    fit_cells_block_sums[block_index_1d] = shared_fit_cells_u32[0];
 }
 
-__global__ void gpu_simulate_step_kernel_noshared(u8* in_grid, u8* out_grid, u8* ruleset) {
+__global__ void gpu_simulate_step_kernel_noshared(u8* in_grid, u8* out_grid, u8* ruleset, u32* fit_cells_block_sums) {
     i32 x = threadIdx.x + blockIdx.x * BLOCK_LENGTH;
     i32 y = threadIdx.y + blockIdx.y * BLOCK_LENGTH;
+    bool fit = false;
 
     if (x < GRID_WIDTH && y < GRID_HEIGHT) {
-        update_cell(in_grid, out_grid, ruleset, x, y);
+        fit = update_cell(in_grid, out_grid, ruleset, x, y);
     }
+
+    i32 block_index_1d = blockIdx.x + blockIdx.y * gridDim.x;
+
+    // initialize fit_cells_block_sum to 0
+    fit_cells_block_sums[block_index_1d] = 0;
+
+    __syncthreads();
+
+    atomicAdd(&fit_cells_block_sums[block_index_1d], (u32) fit);
 }
 
 void simulate_multiple_steps() {
-
     const i32 STEPS = 1;
 
     // grid and block dimensions
@@ -389,9 +415,9 @@ void simulate_multiple_steps() {
     // aktualizace simulace + vygenerovani bitmapy pro zobrazeni stavu simulace
     for (i32 i = 0; i < STEPS; i++) {
         if (USE_SHARED_MEMORY) {
-            gpu_simulate_step_kernel_shared<<<blocks, threads>>>(gpu_grid_states_1, gpu_grid_states_2, preview_simulation.gpu_ruleset);
+            gpu_simulate_step_kernel_shared<<<blocks, threads>>>(gpu_grid_states_1, gpu_grid_states_2, preview_simulation.gpu_ruleset, preview_simulation.gpu_fit_cells_block_sums);
         } else {
-            gpu_simulate_step_kernel_noshared<<<blocks, threads>>>(gpu_grid_states_1, gpu_grid_states_2, preview_simulation.gpu_ruleset);
+            gpu_simulate_step_kernel_noshared<<<blocks, threads>>>(gpu_grid_states_1, gpu_grid_states_2, preview_simulation.gpu_ruleset, preview_simulation.gpu_fit_cells_block_sums);
         }
 
         swap(preview_simulation.gpu_states.gpu_states.opengl.gpu_vbo_grid_states_1, preview_simulation.gpu_states.gpu_states.opengl.gpu_vbo_grid_states_2);
@@ -412,15 +438,31 @@ void simulate_multiple_steps() {
 #if CPU_VERIFY
     printf("Verifying on the CPU...\n");
 
+    u32 fit_cells_block_sum_expected;
+    u32 fit_cells_block_sum_actual = 0;
+    u32 fit_cells_block_sums[GRID_AREA_IN_BLOCKS];
+
     for (i32 i = 0; i < STEPS; i++) {
         // krok simulace life game na CPU
-        cpu_simulate_step(preview_simulation.cpu_grid_states_1, preview_simulation.cpu_grid_states_2, preview_simulation.cpu_ruleset);
+        cpu_simulate_step(preview_simulation.cpu_grid_states_1, preview_simulation.cpu_grid_states_2, preview_simulation.cpu_ruleset, &fit_cells_block_sum_expected);
         swap(preview_simulation.cpu_grid_states_1, preview_simulation.cpu_grid_states_2);
     }
 
     cudaMemcpy(preview_simulation.cpu_grid_states_tmp, gpu_grid_states_1, GRID_AREA_WITH_PITCH * sizeof(u8), cudaMemcpyDeviceToHost);
 
-    int diffs = 0;
+    // compute `fit_cells_block_sum_actual`
+    cudaMemcpy(fit_cells_block_sums, preview_simulation.gpu_fit_cells_block_sums, GRID_AREA_IN_BLOCKS * sizeof(u32), cudaMemcpyDeviceToHost);
+
+    for (i32 i = 0; i < GRID_AREA_IN_BLOCKS; i++) {
+        fit_cells_block_sum_actual += fit_cells_block_sums[i];
+    }
+
+    if (fit_cells_block_sum_expected != fit_cells_block_sum_actual) {
+        fprintf(stderr, "Validation error: difference in sum of fit cells -- %u on GPU, %u on CPU.\n", fit_cells_block_sum_actual, fit_cells_block_sum_expected);
+    }
+
+    // Compare states
+    u32 diffs = 0;
 
     // porovnani vysledku CPU simulace a GPU simulace
     for (i32 y = 0; y < GRID_HEIGHT; y++) {
@@ -433,8 +475,9 @@ void simulate_multiple_steps() {
         }
     }
 
-    if(diffs != 0)
-        std::cout << "CHYBA: " << diffs << " rozdily mezi CPU & GPU simulacni mrizkou" << std::endl;
+    if (diffs != 0) {
+        fprintf(stderr, "Validation error: %u differences between the GPU and CPU simulation grid.\n", diffs);
+    }
 #endif
 
     simulation_gpu_states_unmap(&preview_simulation);

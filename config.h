@@ -97,7 +97,7 @@
 /* #define EXPORT_FRAMES 100 */
 #define PROMPT_TO_START false
 /* #define EXIT_AFTER_FRAMES 10 */
-#define USE_SHARED_MEMORY false
+#define USE_SHARED_MEMORY true
 
 /************************
  * END OF CONFIGURATION *
@@ -137,6 +137,7 @@
 #define BLOCK_AREA            (BLOCK_LENGTH * BLOCK_LENGTH)                     // threads per execution block
 #define GRID_WIDTH_IN_BLOCKS  ((GRID_WIDTH + BLOCK_LENGTH - 1) / BLOCK_LENGTH)  // execution grid width
 #define GRID_HEIGHT_IN_BLOCKS ((GRID_HEIGHT + BLOCK_LENGTH - 1) / BLOCK_LENGTH) // execution grid height
+#define GRID_AREA_IN_BLOCKS (GRID_WIDTH_IN_BLOCKS * GRID_HEIGHT_IN_BLOCKS)
 #define GRID_PITCH (POW2_CEIL(GRID_WIDTH))
 #define GET_GRID_PITCH(field) GET_POW2_CEIL(field, GRID_WIDTH)
 #define GRID_AREA_WITH_PITCH (GRID_PITCH * GRID_HEIGHT)

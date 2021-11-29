@@ -30,7 +30,7 @@ typedef struct {
     // gpu
     u8* gpu_ruleset;
     gpu_states_t gpu_states;
-    u32* gpu_fitness_sums;
+    u32* gpu_fit_cells_block_sums;
 
     // cpu
     u8* cpu_ruleset;
@@ -90,8 +90,8 @@ void simulation_gpu_states_unmap(simulation_t* simulation) {
 }
 
 void simulation_init(simulation_t* simulation) {
-    // alokovani mista pro bitmapu na GPU
     CHECK_ERROR(cudaMalloc((void**) &(simulation->gpu_ruleset), get_ruleset_size() * sizeof(u8)));
+    CHECK_ERROR(cudaMalloc((void**) &(simulation->gpu_fit_cells_block_sums), GRID_AREA_IN_BLOCKS * sizeof(u32)));
 
     simulation->cpu_ruleset = (u8*) calloc(get_ruleset_size(), sizeof(u8));
     simulation->cpu_grid_states_1 = (u8*) calloc(GRID_AREA_WITH_PITCH, sizeof(u8));
@@ -151,7 +151,7 @@ void simulation_free(simulation_t* simulation) {
     }
 
     cudaFree(simulation->gpu_ruleset);
-    cudaFree(simulation->gpu_fitness_sums);
+    cudaFree(simulation->gpu_fit_cells_block_sums);
 
     free(simulation->cpu_ruleset);
     free(simulation->cpu_grid_states_1);
