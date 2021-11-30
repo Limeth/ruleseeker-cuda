@@ -1,8 +1,11 @@
+#include <signal.h>
 #include <stdio.h>
 #include <iostream>
 #include <stdlib.h>
 #include <GL/glew.h>
 #include <GL/freeglut.h>
+#include <array>
+#include <vector>
 #include "config.h"
 #include "util.cuh"
 #include "draw.cuh"
@@ -10,6 +13,14 @@
 #include "simulation.cuh"
 
 using namespace std;
+
+/*
+ * Global state
+ */
+// Time measurement events
+cudaEvent_t start, stop;
+// Whether an interrupt signal was received (^C)
+sig_atomic_t sigint_received = 0;
 
 __inline__ __host__ __device__ void get_neighbours(i32 x, i32 y, i32vec2 neighbours[CELL_NEIGHBOURHOOD_SIZE]) {
 #if GRID_GEOMETRY == GRID_GEOMETRY_SQUARE
@@ -131,12 +142,6 @@ void print_configuration() {
     printf("\tshared_subgrid_load_iterations: %d\n", SHARED_SUBGRID_LOAD_ITERATIONS);
     printf("\n");
 }
-
-cudaStream_t stream1;
-
-// TODO: should be created per-stream
-// udalosti pro mereni casu v CUDA
-cudaEvent_t start, stop;
 
 __inline__ __host__ __device__ i32 get_cell_index_shared(i32 x, i32 y) {
     assert(x >= 0);
@@ -379,70 +384,64 @@ __global__ void gpu_simulate_step_kernel_noshared(u8* in_grid, u8* out_grid, u8*
     atomicAdd(&fit_cells_block_sums[block_index_1d], (u32) fit);
 }
 
-void simulate_multiple_steps(simulation_t* simulation, cudaStream_t stream) {
+// Simulates a single iteration
+void simulate_step(simulation_t* simulation, bool async) {
     const i32 STEPS = 1;
-
-    // grid and block dimensions
-    dim3 blocks(GRID_WIDTH_IN_BLOCKS, GRID_HEIGHT_IN_BLOCKS);
-    dim3 threads(BLOCK_LENGTH, BLOCK_LENGTH);
-
+    // might as well measure the time since we have to wait for the result anyway
+    async &= !CPU_VERIFY;
     u8* gpu_grid_states_1 = NULL;
     u8* gpu_grid_states_2 = NULL;
 
-    simulation_gpu_states_map(simulation, stream, &gpu_grid_states_1, &gpu_grid_states_2);
+    simulation_gpu_states_map(simulation, &gpu_grid_states_1, &gpu_grid_states_2);
 
-    // ulozeni pocatecniho casu
-    CHECK_ERROR(cudaEventRecord(start, stream));
+    if (!async) {
+        // ulozeni pocatecniho casu
+        CHECK_ERROR(cudaEventRecord(start, simulation->stream));
+    }
 
     // aktualizace simulace + vygenerovani bitmapy pro zobrazeni stavu simulace
     for (i32 i = 0; i < STEPS; i++) {
         if (USE_SHARED_MEMORY) {
-            gpu_simulate_step_kernel_shared<<<blocks, threads, 0, stream>>>(gpu_grid_states_1, gpu_grid_states_2, simulation->gpu_ruleset, simulation->gpu_fit_cells_block_sums);
+            gpu_simulate_step_kernel_shared<<<GRID_DIM_BLOCKS, GRID_DIM_THREADS, 0, simulation->stream>>>(gpu_grid_states_1, gpu_grid_states_2, simulation->gpu_ruleset, simulation->gpu_fit_cells_block_sums);
         } else {
-            gpu_simulate_step_kernel_noshared<<<blocks, threads, 0, stream>>>(gpu_grid_states_1, gpu_grid_states_2, simulation->gpu_ruleset, simulation->gpu_fit_cells_block_sums);
+            gpu_simulate_step_kernel_noshared<<<GRID_DIM_BLOCKS, GRID_DIM_THREADS, 0, simulation->stream>>>(gpu_grid_states_1, gpu_grid_states_2, simulation->gpu_ruleset, simulation->gpu_fit_cells_block_sums);
         }
 
-        swap(simulation->gpu_states.gpu_states.opengl.gpu_vbo_grid_states_1, simulation->gpu_states.gpu_states.opengl.gpu_vbo_grid_states_2);
-        swap(simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_1, simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_2);
+        simulation_swap_buffers_gpu(simulation);
         swap(gpu_grid_states_1, gpu_grid_states_2);
     }
 
-    // ulozeni casu ukonceni simulace
-    CHECK_ERROR(cudaEventRecord(stop, stream));
-    CHECK_ERROR(cudaEventSynchronize(stop));
+    if (!async) {
+        // ulozeni casu ukonceni simulace
+        CHECK_ERROR(cudaEventRecord(stop, simulation->stream));
+        CHECK_ERROR(cudaEventSynchronize(stop));
 
-    float elapsedTime;
+        float elapsedTime;
 
-    // vypis casu simulace
-    CHECK_ERROR(cudaEventElapsedTime(&elapsedTime, start, stop));
-    printf("Update: %f ms\n", elapsedTime);
+        // vypis casu simulace
+        CHECK_ERROR(cudaEventElapsedTime(&elapsedTime, start, stop));
+        printf("Update: %f ms\n", elapsedTime);
+    }
 
 #if CPU_VERIFY
     printf("Verifying on the CPU...\n");
 
-    u32 fit_cells_block_sum_expected;
-    u32 fit_cells_block_sum_actual = 0;
-    u32 fit_cells_block_sums[GRID_AREA_IN_BLOCKS];
+    u32 fit_cells_expected;
 
     for (i32 i = 0; i < STEPS; i++) {
         // krok simulace life game na CPU
-        cpu_simulate_step(simulation->cpu_grid_states_1, simulation->cpu_grid_states_2, simulation->cpu_ruleset, &fit_cells_block_sum_expected);
-        swap(simulation->cpu_grid_states_1, simulation->cpu_grid_states_2);
+        cpu_simulate_step(simulation->cpu_grid_states_1, simulation->cpu_grid_states_2, simulation->cpu_ruleset, &fit_cells_expected);
+        simulation_swap_buffers_cpu(simulation);
     }
 
-    cudaMemcpyAsync(simulation->cpu_grid_states_tmp, gpu_grid_states_1, GRID_AREA_WITH_PITCH * sizeof(u8), cudaMemcpyDeviceToHost, stream);
+    cudaMemcpyAsync(simulation->cpu_grid_states_tmp, gpu_grid_states_1, GRID_AREA_WITH_PITCH * sizeof(u8), cudaMemcpyDeviceToHost, simulation->stream);
 
-    // compute `fit_cells_block_sum_actual`
-    cudaMemcpyAsync(fit_cells_block_sums, simulation->gpu_fit_cells_block_sums, GRID_AREA_IN_BLOCKS * sizeof(u32), cudaMemcpyDeviceToHost, stream);
+    simulation_collect_fit_cells_block_sums_async(simulation);
+    cudaStreamSynchronize(simulation->stream);
+    simulation_reduce_fit_cells(simulation);
 
-    cudaStreamSynchronize(stream);
-
-    for (i32 i = 0; i < GRID_AREA_IN_BLOCKS; i++) {
-        fit_cells_block_sum_actual += fit_cells_block_sums[i];
-    }
-
-    if (fit_cells_block_sum_expected != fit_cells_block_sum_actual) {
-        fprintf(stderr, "Validation error: difference in sum of fit cells -- %u on GPU, %u on CPU.\n", fit_cells_block_sum_actual, fit_cells_block_sum_expected);
+    if (fit_cells_expected != simulation->cpu_fit_cells) {
+        fprintf(stderr, "Validation error: difference in sum of fit cells -- %u on GPU, %u on CPU.\n", simulation->cpu_fit_cells, fit_cells_expected);
     }
 
     // Compare states
@@ -464,12 +463,12 @@ void simulate_multiple_steps(simulation_t* simulation, cudaStream_t stream) {
     }
 #endif
 
-    simulation_gpu_states_unmap(&preview_simulation, stream);
+    simulation_gpu_states_unmap(simulation);
 }
 
 // called every frame
 void idle_func() {
-    simulate_multiple_steps(&preview_simulation, stream1);
+    simulate_step(&preview_simulation, false);
     glutPostRedisplay();
 }
 
@@ -514,18 +513,13 @@ void ruleset_load_alloc(u8** ruleset, char* filename) {
 
 // inicializace CUDA - alokace potrebnych dat a vygenerovani pocatecniho stavu lifu
 void initialize(int argc, char **argv) {
-    init_draw(argc, argv, handle_keys, idle_func);
-    srand(0);
-
     if (preview_simulation.gpu_states.type != STATES_TYPE_UNDEF) {
-        simulation_init(&preview_simulation);
+        simulation_init(&preview_simulation, true, 0);
     }
 
-    CHECK_ERROR(cudaStreamCreateWithFlags(&stream1, cudaStreamNonBlocking));
-
     // vytvoreni struktur udalosti pro mereni casu
-    CHECK_ERROR(cudaEventCreate( &start ));
-    CHECK_ERROR(cudaEventCreate( &stop ));
+    CHECK_ERROR(cudaEventCreate(&start));
+    CHECK_ERROR(cudaEventCreate(&stop));
 }
 
 // funkce volana pri ukonceni aplikace, uvolni vsechy prostredky alokovane v CUDA 
@@ -533,13 +527,79 @@ void finalize(void) {
     simulation_free(&preview_simulation);
 
     // zruseni struktur udalosti
-    CHECK_ERROR(cudaEventDestroy( start ));
-    CHECK_ERROR(cudaEventDestroy( stop ));
+    CHECK_ERROR(cudaEventDestroy(start));
+    CHECK_ERROR(cudaEventDestroy(stop));
 
     finalize_draw();
 }
 
+void sigint_handler(int signal) {
+    sigint_received = 1;
+}
+
+void simulate_population(array<simulation_t, POPULATION_SIZE>& simulations) {
+    bool sigint_acknowledged = false;
+
+    for (u32 iteration = 0; iteration < FITNESS_EVAL_LEN; iteration++) {
+        for (simulation_t& simulation : simulations) {
+            simulate_step(&simulation, true);
+            simulation_collect_fit_cells_block_sums_async(&simulation);
+            simulation_reduce_fit_cells(&simulation);
+
+            /* CHECK_ERROR(cudaStreamSynchronize(simulation->stream)); */
+        }
+
+        for (simulation_t& simulation : simulations) {
+            CHECK_ERROR(cudaStreamSynchronize(simulation.stream));
+            printf("%u, ", simulation.cpu_fit_cells);
+        }
+
+        printf("\n");
+
+        // wait for all simulations to finish
+        CHECK_ERROR(cudaDeviceSynchronize());
+
+        if (sigint_received && !sigint_acknowledged) {
+            sigint_acknowledged = true;
+            printf(" Interrupt signal received, finishing current population...\n");
+        }
+    }
+}
+
+int main_seek(int argc, char **argv) {
+    initialize(argc, argv);
+    signal(SIGINT, sigint_handler);
+
+    array<simulation_t, POPULATION_SIZE> simulations;
+
+    for (simulation_t& simulation : simulations) {
+        simulation_init(&simulation, false, 0);
+    }
+
+    i32 population_index = 0;
+
+    while (!sigint_received) {
+        simulate_population(simulations);
+        printf("Finished simulating population #%u.\n", population_index);
+
+        population_index++;
+
+        if (population_index == 3) {
+            break;
+        }
+    }
+
+    printf("Simulations finished.\n");
+
+    for (simulation_t& simulation : simulations) {
+        simulation_free(&simulation);
+    }
+
+    return 0;
+}
+
 int main_simulate(int argc, char **argv) {
+    init_draw(argc, argv, handle_keys, idle_func);
     initialize(argc, argv);
 
     return ui_loop();
@@ -561,6 +621,10 @@ int main(int argc, char **argv) {
     if (PROMPT_TO_START) {
         printf("Press Enter to begin.");
         getchar();
+    }
+
+    if (seek) {
+        return main_seek(argc, argv);
     }
 
     if (simulate) {

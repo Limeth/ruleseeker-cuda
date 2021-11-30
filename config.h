@@ -56,8 +56,10 @@
 /* #define CELL_NEIGHBOURHOOD_TYPE CELL_NEIGHBOURHOOD_TYPE_VERTEX */
 /* #define CELL_STATES 2 */
 
-// # Fitness
+// # Seeking parameters (genetic algorithm)
+#define POPULATION_SIZE 20
 
+// ## Fitness function
 // [uint] the index of the iteration to start cumulating the fitness error from
 #define FITNESS_EVAL_FROM 100
 // [uint] the number of iterations to cumulate the fitness error for
@@ -86,7 +88,7 @@
 // [uint] number of samples per pixel to use when multisampling is enabled
 #define MULTISAMPLING_SAMPLES 16
 // [float/uint] number of iterations per second
-/* #define FRAMERATE 2 */
+#define FRAMERATE 2
 // [uint] number of milliseconds to wait between iterations (overriden by FRAMERATE)
 /* #define SLEEP_MS 5000 */
 // [uint] initial window width
@@ -98,6 +100,7 @@
 #define PROMPT_TO_START false
 /* #define EXIT_AFTER_FRAMES 10 */
 #define USE_SHARED_MEMORY true
+#define DETERMINISTIC_RANDOMNESS false
 
 /************************
  * END OF CONFIGURATION *
@@ -139,6 +142,8 @@
 #define GRID_HEIGHT_IN_BLOCKS ((GRID_HEIGHT + BLOCK_LENGTH - 1) / BLOCK_LENGTH) // execution grid height
 #define GRID_AREA_IN_BLOCKS (GRID_WIDTH_IN_BLOCKS * GRID_HEIGHT_IN_BLOCKS)
 #define GRID_PITCH (POW2_CEIL(GRID_WIDTH))
+#define GRID_DIM_BLOCKS (dim3(GRID_WIDTH_IN_BLOCKS, GRID_HEIGHT_IN_BLOCKS))
+#define GRID_DIM_THREADS (dim3(BLOCK_LENGTH, BLOCK_LENGTH))
 #define GET_GRID_PITCH(field) GET_POW2_CEIL(field, GRID_WIDTH)
 #define GRID_AREA_WITH_PITCH (GRID_PITCH * GRID_HEIGHT)
 #define SHARED_SUBGRID_MARGIN 2 // a 2 cell margin on each side (max of 1 for square, 1 for hex, 2 for triangle; also simplifies neighbour cell addressing)

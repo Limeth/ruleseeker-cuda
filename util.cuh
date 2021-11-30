@@ -150,3 +150,21 @@ int msleep(long msec) {
 
     return res;
 }
+
+cudaError_t cudaCallocAsync(void** ptr, size_t size, cudaStream_t stream) {
+    cudaError_t error;
+    error = cudaMalloc(ptr, size);
+    if (error) {
+        return error;
+    }
+    return cudaMemsetAsync(*ptr, 0, size, stream);
+}
+
+cudaError_t cudaCallocHostAsync(void** ptr, size_t size, cudaStream_t stream) {
+    cudaError_t error;
+    error = cudaMallocHost(ptr, size);
+    if (error) {
+        return error;
+    }
+    return cudaMemsetAsync(*ptr, 0, size, stream);
+}
