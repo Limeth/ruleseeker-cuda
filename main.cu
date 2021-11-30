@@ -6,7 +6,7 @@
 #include <GL/freeglut.h>
 #include <array>
 #include <vector>
-#include "config.h"
+#include "common.h"
 #include "util.cuh"
 #include "draw.cuh"
 #include "math.cuh"
