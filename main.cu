@@ -161,9 +161,9 @@ __inline__ __host__ __device__ i32 get_cell_index(i32 x, i32 y) {
 }
 
 __inline__ __host__ __device__ bool cell_state_fit(u8 state_prev, u8 state_next) {
-#if FITNESS_FN == FITNESS_FN_STATE_PROPORTION
-    return state_next == FITNESS_FN_STATE_PROPORTION_STATE;
-#elif FITNESS_FN == FITNESS_FN_UPDATE_PROPORTION
+#if FITNESS_EVAL == FITNESS_EVAL_STATE
+    return state_next == FITNESS_EVAL_STATE_INDEX;
+#elif FITNESS_EVAL == FITNESS_EVAL_UPDATE
     return state_prev != state_next;
 #endif
 }
@@ -540,30 +540,60 @@ void sigint_handler(int signal) {
 void simulate_population(array<simulation_t, POPULATION_SIZE>& simulations) {
     bool sigint_acknowledged = false;
 
-    for (u32 iteration = 0; iteration < FITNESS_EVAL_LEN; iteration++) {
+    for (simulation_t& simulation : simulations) {
+        simulation_cumulative_error_reset(&simulation);
+    }
+
+    for (u32 iteration = 0; iteration < FITNESS_EVAL_TO; iteration++) {
         for (simulation_t& simulation : simulations) {
             simulate_step(&simulation, true);
-            simulation_collect_fit_cells_block_sums_async(&simulation);
-            simulation_reduce_fit_cells(&simulation);
 
-            /* CHECK_ERROR(cudaStreamSynchronize(simulation->stream)); */
+            if (iteration >= FITNESS_EVAL_FROM) {
+                simulation_collect_fit_cells_block_sums_async(&simulation);
+            }
         }
 
-        for (simulation_t& simulation : simulations) {
-            CHECK_ERROR(cudaStreamSynchronize(simulation.stream));
-            printf("%u, ", simulation.cpu_fit_cells);
+        if (iteration >= FITNESS_EVAL_FROM) {
+            // Wait for the iteration to finish
+            for (simulation_t& simulation : simulations) {
+                CHECK_ERROR(cudaStreamSynchronize(simulation.stream));
+            }
+
+            // Cumulate error
+            for (simulation_t& simulation : simulations) {
+                simulation_reduce_fit_cells(&simulation);
+                simulation_compute_fitness(&simulation);
+                simulation_cumulative_error_add(&simulation);
+            }
+
+            /* for (simulation_t& simulation : simulations) { */
+            /*     printf("%f, ", simulation.fitness); */
+            /* } */
+
+            /* printf("\n"); */
         }
-
-        printf("\n");
-
-        // wait for all simulations to finish
-        CHECK_ERROR(cudaDeviceSynchronize());
 
         if (sigint_received && !sigint_acknowledged) {
             sigint_acknowledged = true;
             printf(" Interrupt signal received, finishing current population...\n");
         }
     }
+
+    printf("cumulative_error:\n");
+
+    for (simulation_t& simulation : simulations) {
+        CHECK_ERROR(cudaStreamSynchronize(simulation.stream));
+    }
+
+    for (simulation_t& simulation : simulations) {
+        simulation_cumulative_error_normalize(&simulation);
+    }
+
+    for (simulation_t& simulation : simulations) {
+        printf("%f, ", simulation.cumulative_error);
+    }
+
+    printf("\n");
 }
 
 int main_seek(int argc, char **argv) {
@@ -584,9 +614,11 @@ int main_seek(int argc, char **argv) {
 
         population_index++;
 
-        if (population_index == 3) {
+        #ifdef EXIT_AFTER_POPULATIONS
+        if (population_index >= EXIT_AFTER_POPULATIONS) {
             break;
         }
+        #endif
     }
 
     printf("Simulations finished.\n");

@@ -44,6 +44,11 @@ typedef struct {
     u8* cpu_grid_states_tmp;
     u32* cpu_fit_cells_block_sums;
     u32 cpu_fit_cells;
+    // value in the range of [0; 1] where 1 is most fit
+    f32 fitness;
+    // cumulatively summed errors derived from fitness in each iteration in which
+    // fitness is computed.
+    f32 cumulative_error;
 } simulation_t;
 
 // Capitalised because they are effectively constant
@@ -151,6 +156,10 @@ void simulation_init(simulation_t* simulation, bool opengl_interop, cudaStream_t
 
     CHECK_ERROR(cudaMemcpyAsync(simulation->gpu_ruleset, simulation->cpu_ruleset, get_ruleset_size() * sizeof(u8), cudaMemcpyHostToDevice, simulation->stream));
     CHECK_ERROR(cudaStreamSynchronize(simulation->stream));
+
+    simulation->cpu_fit_cells = 0;
+    simulation->fitness = 0.0f;
+    simulation->cumulative_error = 0.0f;
 }
 
 void simulation_free(simulation_t* simulation) {
@@ -227,4 +236,41 @@ void simulation_reduce_fit_cells(simulation_t* simulation) {
     for (i32 i = 0; i < GRID_AREA_IN_BLOCKS; i++) {
         simulation->cpu_fit_cells += simulation->cpu_fit_cells_block_sums[i];
     }
+}
+
+void simulation_compute_fitness(simulation_t* simulation) {
+    f32 proportion_actual = ((f32) simulation->cpu_fit_cells) / ((f32) GRID_AREA);
+    f32 fitness;
+
+    // See https://www.desmos.com/calculator/b8daos2dqt
+    f32 x = proportion_actual; // aliases
+    const f32 p = FITNESS_FN_TARGET;
+
+    if (FITNESS_FN_TYPE == FITNESS_FN_TYPE_ABS) {
+        fitness = abs(x - p);
+    } else if (FITNESS_FN_TYPE == FITNESS_FN_TYPE_LINEAR) {
+        fitness = min(x / p, (1.0f - x) / (1.0f - p));
+    } else if (FITNESS_FN_TYPE == FITNESS_FN_TYPE_LIKELIHOOD) {
+        // normalize to fit values exactly in the range [0; 1]
+        const f32 normalization_factor = 1.0f / (powf(1.0f - p, 1.0f - p) * powf(p, p));
+        fitness = normalization_factor * powf(1.0f - x, 1.0f - p) * powf(x, p);
+    } else {
+        printf("Invalid fitness function.\n");
+        exit(1);
+    }
+
+    simulation->fitness = fitness;
+}
+
+void simulation_cumulative_error_reset(simulation_t* simulation) {
+    simulation->cumulative_error = 0.0f;
+}
+
+void simulation_cumulative_error_add(simulation_t* simulation) {
+    f32 error_sqrt = 1.0f - simulation->fitness;
+    simulation->cumulative_error += error_sqrt * error_sqrt;
+}
+
+void simulation_cumulative_error_normalize(simulation_t* simulation) {
+    simulation->cumulative_error /= (f32) FITNESS_EVAL_LEN;
 }

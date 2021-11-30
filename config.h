@@ -30,9 +30,15 @@
 #define CELL_NEIGHBOURHOOD_TYPE_VERTEX 0 // a cell is in the current cell's neighbourhood iff it shares a vertex
 #define CELL_NEIGHBOURHOOD_TYPE_EDGE   1 // a cell is in the current cell's neighbourhood iff it shares an edge
 
-// All possible fitness functions
-#define FITNESS_FN_STATE_PROPORTION 0 // counts the number of cells with a given state compared to the overall number of cells
-#define FITNESS_FN_UPDATE_PROPORTION 1 // counts the number of cell updates compared to the overall number of cells
+// All possible ways to decide whether a cell is "fit", or not.
+#define FITNESS_EVAL_STATE 0 // counts the number of cells with a given state compared to the overall number of cells
+#define FITNESS_EVAL_UPDATE 1 // counts the number of cell updates compared to the overall number of cells
+
+// All possible ways to compute the actual fitness from the number of "fit" cells
+// See https://www.desmos.com/calculator/b8daos2dqt for visual explanation.
+#define FITNESS_FN_TYPE_ABS 0
+#define FITNESS_FN_TYPE_LINEAR 1
+#define FITNESS_FN_TYPE_LIKELIHOOD 2
 
 /**************************
  * START OF CONFIGURATION *
@@ -57,7 +63,7 @@
 /* #define CELL_STATES 2 */
 
 // # Seeking parameters (genetic algorithm)
-#define POPULATION_SIZE 20
+#define POPULATION_SIZE 512
 
 // ## Fitness function
 // [uint] the index of the iteration to start cumulating the fitness error from
@@ -66,14 +72,14 @@
 #define FITNESS_EVAL_LEN 10
 
 // Proportion
-// [enum] which fitness function to use
-#define FITNESS_FN FITNESS_FN_STATE_PROPORTION
+// [enum] which cell evaluation method to use (decide whether a given cell is "fit", or not)
+#define FITNESS_EVAL FITNESS_EVAL_STATE
 // [uint] which state to count the proportion of
-#define FITNESS_FN_STATE_PROPORTION_STATE 0
+#define FITNESS_EVAL_STATE_INDEX 0
 // [enum] which way to evaluate the fitness function
-#define FITNESS_ERR FITNESS_ERR_ABS
-// [float] what is the target value of the fitness function (the value for which the error is 0)
-#define FITNESS_EXPECTED 0.9
+#define FITNESS_FN_TYPE FITNESS_FN_TYPE_ABS
+// [float] what is the target value of the fitness function (the value at which there is a maximum)
+#define FITNESS_FN_TARGET 0.9
 
 // # Miscellaneous
 
@@ -98,7 +104,10 @@
 // [uint] max number of frames exported as PNG
 /* #define EXPORT_FRAMES 100 */
 #define PROMPT_TO_START false
+// Close the application after this many frames. Useful for profiling.
 /* #define EXIT_AFTER_FRAMES 10 */
+// Close the application after this many populations. Useful for profiling.
+#define EXIT_AFTER_POPULATIONS 3
 #define USE_SHARED_MEMORY true
 #define DETERMINISTIC_RANDOMNESS false
 
