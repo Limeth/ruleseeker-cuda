@@ -35,7 +35,7 @@
 // [enum] which cells are considered in the neighbourhood (vertex for Conway's GoL)
 #define CELL_NEIGHBOURHOOD_TYPE CELL_NEIGHBOURHOOD_TYPE_VERTEX
 // [uchar] number of states a cell can become (2 for Conway's GoL)
-#define CELL_STATES 3
+#define CELL_STATES 8
 
 // Conway's GoL:
 /* #define GRID_GEOMETRY GRID_GEOMETRY_SQUARE */
@@ -44,6 +44,12 @@
 
 // # Seeking parameters (genetic algorithm)
 #define POPULATION_SIZE 512
+// # Number of top candidates to keep for the next population, without any adjustments.
+#define POPULATION_ELITES 8
+// # Number of top candidates to use for crossover and mutation (including elites).
+#define POPULATION_SELECTION 256
+// # The chance that a single rule of a ruleset changes during mutation.
+#define MUTATION_CHANCE 0.001
 
 // ## Fitness function
 // [uint] the index of the iteration to start cumulating the fitness error from
@@ -57,7 +63,7 @@
 // [uint] which state to count the proportion of
 #define FITNESS_EVAL_STATE_INDEX 0
 // [enum] which way to evaluate the fitness function
-#define FITNESS_FN_TYPE FITNESS_FN_TYPE_ABS
+#define FITNESS_FN_TYPE FITNESS_FN_TYPE_LIKELIHOOD
 // [float] what is the target value of the fitness function (the value at which there is a maximum)
 #define FITNESS_FN_TARGET 0.9
 
@@ -83,13 +89,13 @@
 #define WINDOW_HEIGHT 800
 // [uint] max number of frames exported as PNG
 /* #define EXPORT_FRAMES 100 */
-#define PROMPT_TO_START false
+#define PROMPT_TO_START true
 // Close the application after this many frames. Useful for profiling.
 /* #define EXIT_AFTER_FRAMES 10 */
 // Close the application after this many populations. Useful for profiling.
-#define EXIT_AFTER_POPULATIONS 3
+/* #define EXIT_AFTER_POPULATIONS 3 */
 #define USE_SHARED_MEMORY true
-#define DETERMINISTIC_RANDOMNESS false
+#define DETERMINISTIC_RANDOMNESS true
 
 /************************
  * END OF CONFIGURATION *

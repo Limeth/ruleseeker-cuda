@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <signal.h>
 #include <stdio.h>
 #include <iostream>
@@ -102,6 +103,14 @@ __inline__ __host__ __device__ void get_neighbours(i32 x, i32 y, i32vec2 neighbo
 }
 
 void print_configuration() {
+    if (POPULATION_SELECTION > POPULATION_SIZE) {
+        printf("`POPULATION_SELECTION` may not exceed `POPULATION_SIZE`.");
+    }
+
+    if (POPULATION_ELITES > POPULATION_SIZE) {
+        printf("`POPULATION_ELITES` may not exceed `POPULATION_SIZE`.");
+    }
+
     printf("\nConfiguration:\n");
     printf("\tGrid width: %d\n", GRID_WIDTH);
     printf("\tGrid height: %d\n", GRID_HEIGHT);
@@ -420,11 +429,11 @@ void simulate_step(simulation_t* simulation, bool async) {
 
         // vypis casu simulace
         CHECK_ERROR(cudaEventElapsedTime(&elapsedTime, start, stop));
-        printf("Update: %f ms\n", elapsedTime);
+        /* printf("Update: %f ms\n", elapsedTime); */
     }
 
 #if CPU_VERIFY
-    printf("Verifying on the CPU...\n");
+    /* printf("Verifying on the CPU...\n"); */
 
     u32 fit_cells_expected;
 
@@ -482,39 +491,19 @@ static void handle_keys(unsigned char key, int x, int y) {
     }
 }
 
-// Writes a ruleset to a file
-void ruleset_save(u8* ruleset, char* filename) {
-    FILE* file = fopen(filename, "wb");
-
-    if (get_ruleset_size() != fwrite(ruleset, sizeof(u8), get_ruleset_size(), file)) {
-        fprintf(stderr, "Failed to write a ruleset.");
-        exit(1);
-    }
-
-    fclose(file);
-}
-
-// Loads a ruleset from a file to a pre-allocated buffer
-void ruleset_load(u8* ruleset, char* filename) {
-    FILE* file = fopen(filename, "rb");
-
-    if (get_ruleset_size() != fread(ruleset, sizeof(u8), get_ruleset_size(), file)) {
-        fprintf(stderr, "Failed to load a ruleset.");
-        exit(1);
-    }
-
-    fclose(file);
-}
-
-void ruleset_load_alloc(u8** ruleset, char* filename) {
-    *ruleset = (u8*) calloc(get_ruleset_size(), sizeof(u8));
-    ruleset_load(*ruleset, filename);
-}
-
 // inicializace CUDA - alokace potrebnych dat a vygenerovani pocatecniho stavu lifu
 void initialize(int argc, char **argv) {
     if (preview_simulation.gpu_states.type != STATES_TYPE_UNDEF) {
         simulation_init(&preview_simulation, true, 0);
+
+        if (argc >= 4) {
+            printf("Loading ruleset: %s\n", argv[3]);
+            simulation_ruleset_load(&preview_simulation, argv[3]);
+        } else {
+            printf("No path to ruleset provided, using a random ruleset.\n");
+        }
+
+        printf("\n");
     }
 
     // vytvoreni struktur udalosti pro mereni casu
@@ -533,11 +522,27 @@ void finalize(void) {
     finalize_draw();
 }
 
-void sigint_handler(int signal) {
-    sigint_received = 1;
+void sigint_handler_abort(int signal) {
+    exit(1);
 }
 
-void simulate_population(array<simulation_t, POPULATION_SIZE>& simulations) {
+void sigint_handler_soft(int signal) {
+    sigint_received += 1;
+
+    if (sigint_received > 1) {
+        printf(" Multiple interrupt signals received, aborting immediately.\n");
+        exit(1);
+    }
+}
+
+void check_sigint(bool* sigint_acknowledged) {
+    if (sigint_received > 0 && !*sigint_acknowledged) {
+        *sigint_acknowledged = true;
+        printf(" Interrupt signal received, finishing current population. Send another signal to abort immediately.\n");
+    }
+}
+
+void population_simulate(array<simulation_t, POPULATION_SIZE>& simulations) {
     bool sigint_acknowledged = false;
 
     for (simulation_t& simulation : simulations) {
@@ -551,11 +556,15 @@ void simulate_population(array<simulation_t, POPULATION_SIZE>& simulations) {
             if (iteration >= FITNESS_EVAL_FROM) {
                 simulation_collect_fit_cells_block_sums_async(&simulation);
             }
+
+            check_sigint(&sigint_acknowledged);
         }
 
         if (iteration >= FITNESS_EVAL_FROM) {
             // Wait for the iteration to finish
             for (simulation_t& simulation : simulations) {
+                check_sigint(&sigint_acknowledged);
+
                 CHECK_ERROR(cudaStreamSynchronize(simulation.stream));
             }
 
@@ -573,32 +582,83 @@ void simulate_population(array<simulation_t, POPULATION_SIZE>& simulations) {
             /* printf("\n"); */
         }
 
-        if (sigint_received && !sigint_acknowledged) {
-            sigint_acknowledged = true;
-            printf(" Interrupt signal received, finishing current population...\n");
-        }
+        check_sigint(&sigint_acknowledged);
     }
+}
 
-    printf("cumulative_error:\n");
+bool simulation_cumulative_error_comparator(simulation_t& a, simulation_t& b) {
+    return a.cumulative_error < b.cumulative_error;
+}
 
+void population_order(array<simulation_t, POPULATION_SIZE>& simulations) {
     for (simulation_t& simulation : simulations) {
-        CHECK_ERROR(cudaStreamSynchronize(simulation.stream));
+        simulation_copy_ruleset_gpu_cpu(&simulation);
     }
 
+    // Wait for all rulesets to be copied
     for (simulation_t& simulation : simulations) {
-        simulation_cumulative_error_normalize(&simulation);
+        cudaStreamSynchronize(simulation.stream);
     }
 
+    // Order simulations by cumulative_error
+    sort(simulations.begin(), simulations.end(), simulation_cumulative_error_comparator);
+}
+
+void population_selection_mutation(array<simulation_t, POPULATION_SIZE>& simulations) {
+    u32 ruleset_size = get_ruleset_size();
+
+    std::vector<std::vector<u8>> rulesets;
+
+    // Initialize rulesets
+    while (rulesets.size() < POPULATION_SIZE) {
+        std::vector<u8> ruleset = std::vector<u8>(ruleset_size, 0);
+        rulesets.push_back(ruleset);
+    }
+
+    // Insert elites
+    for (u32 i = 0; i < POPULATION_ELITES; i++) {
+        memcpy(&rulesets[i][0], simulations[i].cpu_ruleset, ruleset_size * sizeof(u8));
+    }
+
+    // Crossover & mutate to fill up the rest of the population
+    for (u32 i = POPULATION_ELITES; i < POPULATION_SIZE; i++) {
+        u32 a_index = random_sample_u32(POPULATION_SELECTION);
+        u32 b_index = random_sample_u32(POPULATION_SELECTION);
+        u8* a = simulations[a_index].cpu_ruleset;
+        u8* b = simulations[b_index].cpu_ruleset;
+        u8* target = &rulesets[i][0];
+
+        ruleset_crossover(a, b, target);
+        ruleset_mutate(target);
+    }
+
+    // Store resulting rulesets to simulations and upload to the GPU
+    for (u32 i = 0; i < POPULATION_SIZE; i++) {
+        simulation_t* simulation = &simulations[i];
+
+        memcpy(simulation->cpu_ruleset, &rulesets[i][0], ruleset_size * sizeof(u8));
+        simulation_copy_ruleset_cpu_gpu(simulation);
+    }
+
+    // Wait for all rulesets to be copied
     for (simulation_t& simulation : simulations) {
-        printf("%f, ", simulation.cumulative_error);
+        cudaStreamSynchronize(simulation.stream);
     }
-
-    printf("\n");
 }
 
 int main_seek(int argc, char **argv) {
     initialize(argc, argv);
-    signal(SIGINT, sigint_handler);
+    signal(SIGINT, sigint_handler_soft);
+
+    vector<u8> initial_grid = vector<u8>(GRID_AREA_WITH_PITCH, 0);
+
+    if (argc >= 3) {
+        printf("Loading initial grid: %s\n", argv[2]);
+        grid_load(argv[2], &initial_grid[0]);
+    } else {
+        printf("No initial grid provided, using a random initial grid.\n");
+        grid_init_random(&initial_grid[0]);
+    }
 
     array<simulation_t, POPULATION_SIZE> simulations;
 
@@ -606,11 +666,50 @@ int main_seek(int argc, char **argv) {
         simulation_init(&simulation, false, 0);
     }
 
+    printf("Initialized.\n");
+
     i32 population_index = 0;
 
     while (!sigint_received) {
-        simulate_population(simulations);
+        printf("Resetting grids...\n");
+        // Load initial grid
+        for (simulation_t& simulation : simulations) {
+            memcpy(simulation.cpu_grid_states_1, &initial_grid[0], GRID_AREA_WITH_PITCH * sizeof(u8));
+            simulation_copy_grid_cpu_gpu(&simulation);
+            cudaStreamSynchronize(simulation.stream);
+        }
+        printf("Grids reset finished.\n");
+
+        if (population_index > 0) {
+            printf("Performing selection & mutation...\n");
+            population_selection_mutation(simulations);
+            printf("Selection & mutation finished.\n");
+        }
+
+        printf("Simulating population #%u...", population_index);
+        population_simulate(simulations);
         printf("Finished simulating population #%u.\n", population_index);
+        printf("Ordering population...\n");
+        population_order(simulations);
+        printf("Population ordered.\n");
+
+        {
+            printf("cumulative_error:\n");
+
+            for (simulation_t& simulation : simulations) {
+                CHECK_ERROR(cudaStreamSynchronize(simulation.stream));
+            }
+
+            for (simulation_t& simulation : simulations) {
+                simulation_cumulative_error_normalize(&simulation);
+            }
+
+            for (simulation_t& simulation : simulations) {
+                printf("%f, ", simulation.cumulative_error);
+            }
+
+            printf("\n");
+        }
 
         population_index++;
 
@@ -622,6 +721,29 @@ int main_seek(int argc, char **argv) {
     }
 
     printf("Simulations finished.\n");
+    signal(SIGINT, sigint_handler_abort);
+
+    u32 rulesets_to_save;
+
+    printf("How many rulesets would you like to save? [1]: ");
+
+    if (scanf("%u", &rulesets_to_save) != 1) {
+        rulesets_to_save = 1;
+    }
+
+    if (rulesets_to_save > POPULATION_SIZE) {
+        rulesets_to_save = POPULATION_SIZE;
+    }
+
+    for (u32 i = 0; i < rulesets_to_save; i++) {
+        simulation_t* simulation = &simulations[i];
+        char filename[1024];
+
+        snprintf(filename, 1024, "ruleset_%04u.rsr", i);
+        simulation_ruleset_save(simulation, filename);
+    }
+
+    printf("%u rulesets saved.\n", rulesets_to_save);
 
     for (simulation_t& simulation : simulations) {
         simulation_free(&simulation);
@@ -649,6 +771,7 @@ int main(int argc, char **argv) {
     }
 
     print_configuration();
+    random_init();
 
     if (PROMPT_TO_START) {
         printf("Press Enter to begin.");

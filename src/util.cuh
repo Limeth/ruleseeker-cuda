@@ -1,4 +1,5 @@
 #pragma once
+#include <bsd/stdlib.h>
 #include <stdio.h>
 #include <iostream>
 
@@ -167,4 +168,97 @@ cudaError_t cudaCallocHostAsync(void** ptr, size_t size, cudaStream_t stream) {
         return error;
     }
     return cudaMemsetAsync(*ptr, 0, size, stream);
+}
+
+// Write bytes to a file
+bool file_write(char* filename, void* buffer, u32 buffer_len) {
+    FILE* file = fopen(filename, "wb");
+
+    if (buffer_len != fwrite(buffer, sizeof(u8), buffer_len, file)) {
+        return false;
+    }
+
+    fclose(file);
+    return true;
+}
+
+// Load bytes from a file
+bool file_load(char* filename, u8* buffer, u32 buffer_len) {
+    FILE* file = fopen(filename, "rb");
+
+    if (buffer_len != fread(buffer, sizeof(u8), buffer_len, file)) {
+        return false;
+    }
+
+    fclose(file);
+    return true;
+}
+
+// Writes a 2d buffer with pitch to a file
+bool file_write_2d_pitch(char* filename, u8* buffer, u32 width, u32 height, u32 pitch) {
+    FILE* file = fopen(filename, "wb");
+    u32 offset = pitch - width;
+
+    for (i32 y = 0; y < height; y++) {
+        if (y > 0) {
+            if (!fseek(file, offset, SEEK_CUR)) {
+                return false;
+            }
+        }
+
+        if (width != fwrite(buffer, sizeof(u8), width, file)) {
+            return false;
+        }
+
+        buffer += pitch;
+    }
+
+    fclose(file);
+    return true;
+}
+
+// Writes a 2d buffer with pitch to a file
+bool file_load_2d_pitch(char* filename, u8* buffer, u32 width, u32 height, u32 pitch) {
+    FILE* file = fopen(filename, "rb");
+    u32 offset = pitch - width;
+
+    for (i32 y = 0; y < height; y++) {
+        if (y > 0) {
+            if (!fseek(file, offset, SEEK_CUR)) {
+                return false;
+            }
+        }
+
+        if (width != fread(buffer, sizeof(u8), width, file)) {
+            return false;
+        }
+
+        buffer += pitch;
+    }
+
+    fclose(file);
+    return true;
+}
+
+void random_init() {
+    if (DETERMINISTIC_RANDOMNESS) {
+        srand(0);
+    }
+}
+
+u32 random_sample_u32(u32 upper_bound_exclusive) {
+    if (DETERMINISTIC_RANDOMNESS) {
+        // not uniform, but oh well
+        return rand() % upper_bound_exclusive;
+    } else {
+        return arc4random_uniform(upper_bound_exclusive);
+    }
+}
+
+f32 random_sample_f32_normalized() {
+    return ((f32) random_sample_u32(RAND_MAX) / (f32) (RAND_MAX - 1));
+}
+
+f32 random_sample_f32(f32 upper_bound_inclusive) {
+    return random_sample_f32_normalized() * upper_bound_inclusive;
 }

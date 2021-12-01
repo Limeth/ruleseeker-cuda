@@ -50,6 +50,7 @@
     #define CELL_VERTICES 6
 #endif
 
+#define POPULATION_MUTATED (POPULATION_SIZE - POPULATION_ELITES)
 #define GRID_AREA (GRID_WIDTH * GRID_HEIGHT)
 #define BLOCK_AREA            (BLOCK_LENGTH * BLOCK_LENGTH)                     // threads per execution block
 #define GRID_WIDTH_IN_BLOCKS  ((GRID_WIDTH + BLOCK_LENGTH - 1) / BLOCK_LENGTH)  // execution grid width

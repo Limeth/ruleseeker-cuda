@@ -73,6 +73,15 @@ __inline__ __host__ __device__ int get_ruleset_size() {
 #endif
 }
 
+void grid_init_random(u8* grid) {
+    for (i32 y = 0; y < GRID_HEIGHT; y++) {
+        for (i32 x = 0; x < GRID_WIDTH; x++) {
+            i32 i = x + y * GRID_PITCH;
+            grid[i] = (u8) random_sample_u32(CELL_STATES);
+        }
+    }
+}
+
 /**
  * Initializes a simulation with the provided stream.
  *
@@ -104,23 +113,13 @@ void simulation_init(simulation_t* simulation, bool opengl_interop, cudaStream_t
 
     CHECK_ERROR(cudaStreamSynchronize(simulation->stream));
 
-    if (DETERMINISTIC_RANDOMNESS) {
-        srand(0);
-
-        // Initialize ruleset. Keep first rule as 0.
-        for (i32 i = 1; i < get_ruleset_size(); i++) {
-            simulation->cpu_ruleset[i] = (u8) (rand() % CELL_STATES);
-        }
-    } else {
-        for (i32 i = 1; i < get_ruleset_size(); i++) {
-            simulation->cpu_ruleset[i] = (u8) arc4random_uniform(CELL_STATES);
-        }
+    // Initialize ruleset. Keep first rule as 0.
+    for (i32 i = 1; i < get_ruleset_size(); i++) {
+        simulation->cpu_ruleset[i] = (u8) random_sample_u32(CELL_STATES);
     }
 
-    /* for (int i = 0; i < GRID_AREA; i++) { */
-    /*     cpu_grid_states_1[i] = (u8) (rand() % CELL_STATES); */
-    /* } */
-    simulation->cpu_grid_states_1[(GRID_HEIGHT / 2) * GRID_PITCH + GRID_WIDTH / 2] = 1;
+    grid_init_random(simulation->cpu_grid_states_1);
+    /* simulation->cpu_grid_states_1[(GRID_HEIGHT / 2) * GRID_PITCH + GRID_WIDTH / 2] = 1; */
 
     CHECK_ERROR(cudaStreamSynchronize(simulation->stream));
 
@@ -201,13 +200,23 @@ void simulation_swap_buffers_cpu(simulation_t* simulation) {
 
 void simulation_gpu_states_map(simulation_t* simulation, u8** gpu_grid_states_1, u8** gpu_grid_states_2) {
     if (simulation->gpu_states.type == STATES_TYPE_OPENGL) {
-        CHECK_ERROR(cudaGraphicsMapResources(1, &simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_1, simulation->stream));
-        CHECK_ERROR(cudaGraphicsMapResources(1, &simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_2, simulation->stream));
-        CHECK_ERROR(cudaGraphicsResourceGetMappedPointer((void**) gpu_grid_states_1, NULL, simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_1));
-        CHECK_ERROR(cudaGraphicsResourceGetMappedPointer((void**) gpu_grid_states_2, NULL, simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_2));
+        if (gpu_grid_states_1) {
+            CHECK_ERROR(cudaGraphicsMapResources(1, &simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_1, simulation->stream));
+            CHECK_ERROR(cudaGraphicsResourceGetMappedPointer((void**) gpu_grid_states_1, NULL, simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_1));
+        }
+
+        if (gpu_grid_states_2) {
+            CHECK_ERROR(cudaGraphicsMapResources(1, &simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_2, simulation->stream));
+            CHECK_ERROR(cudaGraphicsResourceGetMappedPointer((void**) gpu_grid_states_2, NULL, simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_2));
+        }
     } else if (simulation->gpu_states.type == STATES_TYPE_CUDA) {
-        *gpu_grid_states_1 = simulation->gpu_states.gpu_states.cuda.gpu_cuda_grid_states_1;
-        *gpu_grid_states_2 = simulation->gpu_states.gpu_states.cuda.gpu_cuda_grid_states_2;
+        if (gpu_grid_states_1) {
+            *gpu_grid_states_1 = simulation->gpu_states.gpu_states.cuda.gpu_cuda_grid_states_1;
+        }
+
+        if (gpu_grid_states_2) {
+            *gpu_grid_states_2 = simulation->gpu_states.gpu_states.cuda.gpu_cuda_grid_states_2;
+        }
     } else {
         fprintf(stderr, "Cannot map states of an uninitialized simulation.\n");
         exit(1);
@@ -224,6 +233,84 @@ void simulation_gpu_states_unmap(simulation_t* simulation) {
         fprintf(stderr, "Cannot unmap states of an uninitialized simulation.\n");
         exit(1);
     }
+}
+
+// Writes a ruleset to a file
+void ruleset_save(char* filename, u8* ruleset) {
+    if (!file_write(filename, ruleset, get_ruleset_size())) {
+        fprintf(stderr, "Failed to write a ruleset.");
+        exit(1);
+    }
+}
+
+// Loads a ruleset from a file to a pre-allocated buffer
+void ruleset_load(char* filename, u8* ruleset) {
+    if (!file_load(filename, ruleset, get_ruleset_size())) {
+        fprintf(stderr, "Failed to load a ruleset.");
+        exit(1);
+    }
+}
+
+void simulation_copy_grid_cpu_gpu(simulation_t* simulation) {
+    u8* gpu_grid_states_1;
+
+    simulation_gpu_states_map(simulation, &gpu_grid_states_1, NULL);
+    cudaMemcpyAsync(gpu_grid_states_1, simulation->cpu_grid_states_1, GRID_AREA_WITH_PITCH * sizeof(u8), cudaMemcpyHostToDevice, simulation->stream);
+    simulation_gpu_states_unmap(simulation);
+}
+
+void simulation_copy_ruleset_gpu_cpu(simulation_t* simulation) {
+    CHECK_ERROR(cudaMemcpyAsync(simulation->cpu_ruleset, simulation->gpu_ruleset, get_ruleset_size() * sizeof(u8), cudaMemcpyDeviceToHost, simulation->stream));
+}
+
+void simulation_copy_ruleset_cpu_gpu(simulation_t* simulation) {
+    CHECK_ERROR(cudaMemcpyAsync(simulation->gpu_ruleset, simulation->cpu_ruleset, get_ruleset_size() * sizeof(u8), cudaMemcpyHostToDevice, simulation->stream));
+}
+
+void simulation_ruleset_save(simulation_t* simulation, char* filename) {
+    simulation_copy_ruleset_gpu_cpu(simulation);
+    cudaStreamSynchronize(simulation->stream);
+    ruleset_save(filename, simulation->cpu_ruleset);
+}
+
+void simulation_ruleset_load(simulation_t* simulation, char* filename) {
+    ruleset_load(filename, simulation->cpu_ruleset);
+    CHECK_ERROR(cudaMemcpyAsync(simulation->gpu_ruleset, simulation->cpu_ruleset, get_ruleset_size() * sizeof(u8), cudaMemcpyHostToDevice, simulation->stream));
+    cudaStreamSynchronize(simulation->stream);
+}
+
+void grid_save(char* filename, u8* grid) {
+    if (!file_write_2d_pitch(filename, grid, GRID_WIDTH, GRID_HEIGHT, GRID_PITCH)) {
+        fprintf(stderr, "Failed to write a grid.");
+        exit(1);
+    }
+}
+
+void grid_load(char* filename, u8* grid) {
+    if (!file_load_2d_pitch(filename, grid, GRID_WIDTH, GRID_HEIGHT, GRID_PITCH)) {
+        fprintf(stderr, "Failed to load a grid.");
+        exit(1);
+    }
+}
+
+void simulation_grid_save(simulation_t* simulation, char* filename) {
+    u8* gpu_grid_states_1;
+
+    simulation_gpu_states_map(simulation, &gpu_grid_states_1, NULL);
+    CHECK_ERROR(cudaMemcpyAsync(simulation->cpu_grid_states_1, gpu_grid_states_1, GRID_AREA_WITH_PITCH * sizeof(u8), cudaMemcpyDeviceToHost, simulation->stream));
+    cudaStreamSynchronize(simulation->stream);
+    simulation_gpu_states_unmap(simulation);
+    grid_save(filename, simulation->cpu_grid_states_1);
+}
+
+void simulation_grid_load(simulation_t* simulation, char* filename) {
+    u8* gpu_grid_states_1;
+
+    simulation_gpu_states_map(simulation, &gpu_grid_states_1, NULL);
+    grid_load(filename, simulation->cpu_grid_states_1);
+    CHECK_ERROR(cudaMemcpyAsync(gpu_grid_states_1, simulation->cpu_grid_states_1, GRID_AREA_WITH_PITCH * sizeof(u8), cudaMemcpyHostToDevice, simulation->stream));
+    cudaStreamSynchronize(simulation->stream);
+    simulation_gpu_states_unmap(simulation);
 }
 
 void simulation_collect_fit_cells_block_sums_async(simulation_t* simulation) {
@@ -273,4 +360,27 @@ void simulation_cumulative_error_add(simulation_t* simulation) {
 
 void simulation_cumulative_error_normalize(simulation_t* simulation) {
     simulation->cumulative_error /= (f32) FITNESS_EVAL_LEN;
+}
+
+void ruleset_crossover(u8* a, u8* b, u8* target) {
+    u32 ruleset_size = get_ruleset_size();
+
+    for (u32 i = 0; i < ruleset_size; i++) {
+        if (random_sample_u32(2)) {
+            target[i] = a[i];
+        } else {
+            target[i] = b[i];
+        }
+    }
+}
+
+void ruleset_mutate(u8* ruleset) {
+    u32 ruleset_size = get_ruleset_size();
+
+    // There is probably a more efficient way to mutate the genome, maybe using the central limit theorem
+    for (u32 i = 0; i < ruleset_size; i++) {
+        if (random_sample_f32_normalized() < MUTATION_CHANCE) {
+            ruleset[i] = (u8) random_sample_u32(CELL_STATES);
+        }
+    }
 }
