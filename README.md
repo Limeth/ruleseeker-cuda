@@ -2,5 +2,5 @@
 Requirements:
 * freeglut3-dev
 * libavcodec-dev
-* nvidia-cuda-toolkit
+* Cuda Toolkit 11.5 (not tested with other versions)
 * libbsd-dev

@@ -1,5 +1,6 @@
 #pragma once
 #include <bsd/stdlib.h>
+#include <cub/cub.cuh>
 #include "util.cuh"
 #include "math.cuh"
 
@@ -36,13 +37,14 @@ typedef struct {
     u8* gpu_ruleset;
     gpu_states_t gpu_states;
     u32* gpu_fit_cells_block_sums;
+    u32* gpu_fit_cells;
 
     // cpu
+    temp_storage_t temp_storage;
     u8* cpu_ruleset;
     u8* cpu_grid_states_1;
     u8* cpu_grid_states_2;
     u8* cpu_grid_states_tmp;
-    u32* cpu_fit_cells_block_sums;
     u32 cpu_fit_cells;
     // value in the range of [0; 1] where 1 is most fit
     f32 fitness;
@@ -98,8 +100,11 @@ void simulation_init(simulation_t* simulation, bool opengl_interop, cudaStream_t
         CHECK_ERROR(cudaStreamCreateWithFlags(&simulation->stream, cudaStreamNonBlocking));
     }
 
+    temp_storage_init(&simulation->temp_storage);
+
     CHECK_ERROR(cudaMalloc((void**) &(simulation->gpu_ruleset), get_ruleset_size() * sizeof(u8)));
     CHECK_ERROR(cudaMalloc((void**) &(simulation->gpu_fit_cells_block_sums), GRID_AREA_IN_BLOCKS * sizeof(u32)));
+    CHECK_ERROR(cudaCallocHostAsync((void**) &(simulation->gpu_fit_cells), sizeof(u32), simulation->stream));
 
     /* simulation->cpu_ruleset = (u8*) calloc(get_ruleset_size(), sizeof(u8)); */
     /* simulation->cpu_grid_states_1 = (u8*) calloc(GRID_AREA_WITH_PITCH, sizeof(u8)); */
@@ -109,7 +114,6 @@ void simulation_init(simulation_t* simulation, bool opengl_interop, cudaStream_t
     CHECK_ERROR(cudaCallocHostAsync((void**) &(simulation->cpu_grid_states_1), GRID_AREA_WITH_PITCH * sizeof(u8), simulation->stream));
     CHECK_ERROR(cudaCallocHostAsync((void**) &(simulation->cpu_grid_states_2), GRID_AREA_WITH_PITCH * sizeof(u8), simulation->stream));
     CHECK_ERROR(cudaCallocHostAsync((void**) &(simulation->cpu_grid_states_tmp), GRID_AREA_WITH_PITCH * sizeof(u8), simulation->stream));
-    CHECK_ERROR(cudaCallocHostAsync((void**) &(simulation->cpu_fit_cells_block_sums), GRID_AREA_IN_BLOCKS * sizeof(u32), simulation->stream));
 
     CHECK_ERROR(cudaStreamSynchronize(simulation->stream));
 
@@ -179,7 +183,6 @@ void simulation_free(simulation_t* simulation) {
     cudaFreeHost(simulation->cpu_grid_states_1);
     cudaFreeHost(simulation->cpu_grid_states_2);
     cudaFreeHost(simulation->cpu_grid_states_tmp);
-    cudaFreeHost(simulation->cpu_fit_cells_block_sums);
 }
 
 void simulation_swap_buffers_gpu(simulation_t* simulation) {
@@ -251,6 +254,18 @@ void ruleset_load(char* filename, u8* ruleset) {
     }
 }
 
+void simulation_set_grid(simulation_t* simulation, u8* cpu_grid, u8* gpu_grid) {
+    if (CPU_VERIFY) {
+        memcpy(simulation->cpu_grid_states_1, cpu_grid, GRID_AREA_WITH_PITCH * sizeof(u8));
+    }
+
+    u8* gpu_grid_states_1;
+
+    simulation_gpu_states_map(simulation, &gpu_grid_states_1, NULL);
+    cudaMemcpyAsync(gpu_grid_states_1, gpu_grid, GRID_AREA_WITH_PITCH * sizeof(u8), cudaMemcpyDeviceToDevice, simulation->stream);
+    simulation_gpu_states_unmap(simulation);
+}
+
 void simulation_copy_grid_cpu_gpu(simulation_t* simulation) {
     u8* gpu_grid_states_1;
 
@@ -259,12 +274,16 @@ void simulation_copy_grid_cpu_gpu(simulation_t* simulation) {
     simulation_gpu_states_unmap(simulation);
 }
 
+void ruleset_copy(u8* to, u8* from, cudaMemcpyKind kind, cudaStream_t stream) {
+    CHECK_ERROR(cudaMemcpyAsync(to, from, get_ruleset_size() * sizeof(u8), kind, stream));
+}
+
 void simulation_copy_ruleset_gpu_cpu(simulation_t* simulation) {
-    CHECK_ERROR(cudaMemcpyAsync(simulation->cpu_ruleset, simulation->gpu_ruleset, get_ruleset_size() * sizeof(u8), cudaMemcpyDeviceToHost, simulation->stream));
+    ruleset_copy(simulation->cpu_ruleset, simulation->gpu_ruleset, cudaMemcpyDeviceToHost, simulation->stream);
 }
 
 void simulation_copy_ruleset_cpu_gpu(simulation_t* simulation) {
-    CHECK_ERROR(cudaMemcpyAsync(simulation->gpu_ruleset, simulation->cpu_ruleset, get_ruleset_size() * sizeof(u8), cudaMemcpyHostToDevice, simulation->stream));
+    ruleset_copy(simulation->gpu_ruleset, simulation->cpu_ruleset, cudaMemcpyHostToDevice, simulation->stream);
 }
 
 void simulation_ruleset_save(simulation_t* simulation, char* filename) {
@@ -275,7 +294,7 @@ void simulation_ruleset_save(simulation_t* simulation, char* filename) {
 
 void simulation_ruleset_load(simulation_t* simulation, char* filename) {
     ruleset_load(filename, simulation->cpu_ruleset);
-    CHECK_ERROR(cudaMemcpyAsync(simulation->gpu_ruleset, simulation->cpu_ruleset, get_ruleset_size() * sizeof(u8), cudaMemcpyHostToDevice, simulation->stream));
+    simulation_copy_ruleset_cpu_gpu(simulation);
     cudaStreamSynchronize(simulation->stream);
 }
 
@@ -313,18 +332,6 @@ void simulation_grid_load(simulation_t* simulation, char* filename) {
     simulation_gpu_states_unmap(simulation);
 }
 
-void simulation_collect_fit_cells_block_sums_async(simulation_t* simulation) {
-    cudaMemcpyAsync(simulation->cpu_fit_cells_block_sums, simulation->gpu_fit_cells_block_sums, GRID_AREA_IN_BLOCKS * sizeof(u32), cudaMemcpyDeviceToHost, simulation->stream);
-}
-
-void simulation_reduce_fit_cells(simulation_t* simulation) {
-    simulation->cpu_fit_cells = 0;
-
-    for (i32 i = 0; i < GRID_AREA_IN_BLOCKS; i++) {
-        simulation->cpu_fit_cells += simulation->cpu_fit_cells_block_sums[i];
-    }
-}
-
 void simulation_compute_fitness(simulation_t* simulation) {
     f32 proportion_actual = ((f32) simulation->cpu_fit_cells) / ((f32) GRID_AREA);
     f32 fitness;
@@ -360,6 +367,24 @@ void simulation_cumulative_error_add(simulation_t* simulation) {
 
 void simulation_cumulative_error_normalize(simulation_t* simulation) {
     simulation->cumulative_error /= (f32) FITNESS_EVAL_LEN;
+}
+
+void simulation_temp_storage_ensure(simulation_t* simulation, size_t size) {
+    temp_storage_ensure(&simulation->temp_storage, size, simulation->stream);
+}
+
+void simulation_reduce_fit_cells_async(simulation_t* simulation) {
+    // Ensure enough temp storage
+    size_t temp_storage_size = 0;
+
+    CHECK_ERROR(cub::DeviceReduce::Sum(NULL, temp_storage_size, simulation->gpu_fit_cells_block_sums, simulation->gpu_fit_cells, GRID_AREA_IN_BLOCKS));
+    simulation_temp_storage_ensure(simulation, temp_storage_size);
+
+    // Reduce
+    CHECK_ERROR(cub::DeviceReduce::Sum(simulation->temp_storage.allocation, simulation->temp_storage.size, simulation->gpu_fit_cells_block_sums, simulation->gpu_fit_cells, GRID_AREA_IN_BLOCKS, simulation->stream, CUB_DEBUG_SYNCHRONOUS));
+
+    // Debug
+    CHECK_ERROR(cudaMemcpyAsync(&simulation->cpu_fit_cells, simulation->gpu_fit_cells, sizeof(u32), cudaMemcpyDeviceToHost, simulation->stream));
 }
 
 void ruleset_crossover(u8* a, u8* b, u8* target) {

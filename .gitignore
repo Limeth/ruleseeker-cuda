@@ -6,3 +6,5 @@ shaders.cuh
 **/*.LOCAL.*
 **/LOCAL
 **/*.nvvp
+**/*.rsr
+**/*.rsg

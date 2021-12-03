@@ -35,19 +35,27 @@
 // [enum] which cells are considered in the neighbourhood (vertex for Conway's GoL)
 #define CELL_NEIGHBOURHOOD_TYPE CELL_NEIGHBOURHOOD_TYPE_VERTEX
 // [uchar] number of states a cell can become (2 for Conway's GoL)
-#define CELL_STATES 8
+#define CELL_STATES 12
 
 // Conway's GoL:
 /* #define GRID_GEOMETRY GRID_GEOMETRY_SQUARE */
 /* #define CELL_NEIGHBOURHOOD_TYPE CELL_NEIGHBOURHOOD_TYPE_VERTEX */
 /* #define CELL_STATES 2 */
 
-// # Seeking parameters (genetic algorithm)
-#define POPULATION_SIZE 512
+/* // # Seeking parameters (genetic algorithm) */
+/* #define POPULATION_SIZE 512 */
+/* // # Number of top candidates to keep for the next population, without any adjustments. */
+/* #define POPULATION_ELITES 8 */
+/* // # Number of top candidates to use for crossover and mutation (including elites). */
+/* #define POPULATION_SELECTION 256 */
+/* // # The chance that a single rule of a ruleset changes during mutation. */
+/* #define MUTATION_CHANCE 0.001 */
+// # The number of candidates to simulate simultaneously within a population, excluding elites.
+#define POPULATION_SIZE 32
 // # Number of top candidates to keep for the next population, without any adjustments.
-#define POPULATION_ELITES 8
+#define POPULATION_ELITES 2
 // # Number of top candidates to use for crossover and mutation (including elites).
-#define POPULATION_SELECTION 256
+#define POPULATION_SELECTION 16
 // # The chance that a single rule of a ruleset changes during mutation.
 #define MUTATION_CHANCE 0.001
 
@@ -80,7 +88,7 @@
 // [uint] number of samples per pixel to use when multisampling is enabled
 #define MULTISAMPLING_SAMPLES 16
 // [float/uint] number of iterations per second
-#define FRAMERATE 2
+#define FRAMERATE 8
 // [uint] number of milliseconds to wait between iterations (overriden by FRAMERATE)
 /* #define SLEEP_MS 5000 */
 // [uint] initial window width
@@ -90,12 +98,20 @@
 // [uint] max number of frames exported as PNG
 /* #define EXPORT_FRAMES 100 */
 #define PROMPT_TO_START true
-// Close the application after this many frames. Useful for profiling.
+// Close the application after this many frames. Useful for profiling. Uncomment to disable.
 /* #define EXIT_AFTER_FRAMES 10 */
-// Close the application after this many populations. Useful for profiling.
-/* #define EXIT_AFTER_POPULATIONS 3 */
+// Close the application after this many populations. Useful for profiling. Uncomment to disable.
+#define EXIT_AFTER_POPULATIONS 3
 #define USE_SHARED_MEMORY true
 #define DETERMINISTIC_RANDOMNESS true
+// Whether to enable `debug_synchronous` for all CUB calls to print debug info.
+#define CUB_DEBUG_SYNCHRONOUS false
+// Max number of simultaneously running thread blocks performing crossover, each
+// with a separate random number generator.
+#define CROSSOVER_MUTATE_BLOCKS_MAX 16
+// Number of simultaneously running crossover kernels, each with their own set of
+// crossover blocks.
+#define CROSSOVER_MUTATE_KERNELS_MAX 32
 
 /************************
  * END OF CONFIGURATION *

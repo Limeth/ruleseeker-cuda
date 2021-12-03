@@ -7,6 +7,10 @@
 #include <GL/freeglut.h>
 #include <array>
 #include <vector>
+#include <cub/cub.cuh>
+#include <curand_kernel.h>
+#include <cooperative_groups.h>
+#include <boost/math/distributions/binomial.hpp>
 #include "common.h"
 #include "util.cuh"
 #include "draw.cuh"
@@ -14,6 +18,65 @@
 #include "simulation.cuh"
 
 using namespace std;
+using namespace cooperative_groups;
+
+typedef struct {
+    u8* gpu_ruleset;
+    f32 cumulative_error;
+} elite_ruleset_t;
+
+typedef struct {
+    /* CPU */
+    // CUB temporary storage
+    temp_storage_t temp_storage;
+    // A CUDA stream per candidate
+    array<cudaStream_t, POPULATION_SIZE> streams;
+    // RNG states
+    array<curandStatePhilox4_32_10_t*, CROSSOVER_MUTATE_KERNELS_MAX> cpu_gpu_rngs;
+    // CPU-allocated initial states of the grid.
+    vector<u8> cpu_initial_grid;
+    // CPU-allocated POPULATION_SELECTION-long array of pointers to mutation rulesets.
+    // These rulesets are used for:
+    // * copying the top POPULATION_ELITES rulesets into elite rulesets;
+    // * reading from during mutation, while new rulesets are written to simulation rulesets.
+    array<u8*, POPULATION_SELECTION> cpu_gpu_mutation_rulesets;
+    // Rulesets which are passed on to the next population without any mutations.
+    array<elite_ruleset_t, POPULATION_ELITES> elite_rulesets;
+    // Containers for simulations of rulesets on the GPU. Used to determine the `cumulative_error`,
+    // by which simulations are selected.
+    array<simulation_t, POPULATION_SIZE> simulations;
+    // The current index of the population being simulated.
+    u32 population_index;
+
+    /* GPU */
+    // GPU-allocated initial states of the grid.
+    u8* gpu_initial_grid;
+    // GPU-allocated POPULATION_SIZE_PLUS_ELITES-long array of pointers to simulation and elite rulesets,
+    // used for sorting during selection.
+    u8** gpu_gpu_selection_rulesets_unordered;
+    u8** gpu_gpu_selection_rulesets_ordered;
+    // GPU-allocated POPULATION_SIZE_PLUS_ELITES-long array of cumulative errors of simulation and elite rulesets,
+    // used for sorting during selection.
+    f32* gpu_selection_cumulative_errors_unordered;
+    f32* gpu_selection_cumulative_errors_ordered;
+    // GPU-allocated POPULATION_SELECTION-long array of pointers to mutation rulesets.
+    u8** gpu_gpu_mutation_rulesets;
+    // GPU-allocated POPULATION_ELITES-long array of pointers to elite rulesets.
+    u8** gpu_gpu_elite_rulesets;
+} seeker_t;
+
+// A set of rules that has been evaluated with a cumulative error
+typedef struct {
+    // whether this ruleset was simulated in the current population (false),
+    // or simulation was skipped because of its low cumulative error in the previous population (true).
+    bool elite;
+    // depending on `elite`, either an index into the array of elites, or an index into the array of simulations.
+    u32 index;
+    // the ruleset's cumulative error, by which it will be ordered.
+    f32 cumulative_error;
+    // the ruleset
+    u8* gpu_ruleset;
+} evaluated_ruleset_t;
 
 /*
  * Global state
@@ -104,11 +167,15 @@ __inline__ __host__ __device__ void get_neighbours(i32 x, i32 y, i32vec2 neighbo
 
 void print_configuration() {
     if (POPULATION_SELECTION > POPULATION_SIZE) {
-        printf("`POPULATION_SELECTION` may not exceed `POPULATION_SIZE`.");
+        printf("`POPULATION_SELECTION` (%d) may not exceed `POPULATION_SIZE` (%d).", POPULATION_SELECTION, POPULATION_SIZE);
     }
 
-    if (POPULATION_ELITES > POPULATION_SIZE) {
-        printf("`POPULATION_ELITES` may not exceed `POPULATION_SIZE`.");
+    if (POPULATION_SELECTION < 2) {
+        printf("`POPULATION_SELECTION` (%d) must be set to at least 2.", POPULATION_SELECTION);
+    }
+
+    if (POPULATION_ELITES > POPULATION_SELECTION) {
+        printf("`POPULATION_ELITES` (%d) may not exceed `POPULATION_SELECTION` (%d).", POPULATION_ELITES, POPULATION_SELECTION);
     }
 
     printf("\nConfiguration:\n");
@@ -251,30 +318,39 @@ __device__ bool update_cell_shared(u8* in_subgrid_shared, u8* out_grid, u8* rule
     return cell_state_fit(current_state, next_state);
 }
 
-/* funkce zajistujici aktualizaci simulace - verze pro CPU
- *   in_grid - vstupni simulacni mrizka
- *   out_grid - vystupni simulacni mrizka
- *   width - sirka simulacni mrizky
- *   height - vyska simulacni mrizky
- *   fit_cells_block_sum - pointer to a single counter of fit cells
+/*
+ * Simulates a single iteration of the cellular automaton according to the provided ruleset.
+ * Performs partial collection of fit cells according to the fit cell criterion `FITNESS_EVAL`.
+ *
+ *   in_grid - input grid state
+ *   out_grid - output grid state
+ *   ruleset - the ruleset to use for computing the `out_grid`
+ *   fit_cells_block_sum - a pointer to a counter of the total fit cells, or `NULL` if none should be collected
  */
 __host__ void cpu_simulate_step(u8* in_grid, u8* out_grid, u8* ruleset, u32* fit_cells_block_sum) {
-    *fit_cells_block_sum = 0;
+    if (fit_cells_block_sum) {
+        *fit_cells_block_sum = 0;
+    }
 
     for (int y = 0; y < GRID_HEIGHT; y++) {
         for (int x = 0; x < GRID_WIDTH; x++) {
             bool fit = update_cell(in_grid, out_grid, ruleset, x, y);
-            *fit_cells_block_sum += (u32) fit;
+
+            if (fit_cells_block_sum) {
+                *fit_cells_block_sum += (u32) fit;
+            }
         }
     }
 }
 
-/* funkce zajistujici aktualizaci simulace - verze pro CPU
- *   in_grid - vstupni simulacni mrizka
- *   out_grid - vystupni simulacni mrizka
- *   width - sirka simulacni mrizky
- *   height - vyska simulacni mrizky
- *   fit_cells_block_sum - pointer to counters of fit cells, one per block
+/*
+ * Simulates a single iteration of the cellular automaton according to the provided ruleset.
+ * Performs partial collection of fit cells according to the fit cell criterion `FITNESS_EVAL`.
+ *
+ *   in_grid - input grid state
+ *   out_grid - output grid state
+ *   ruleset - the ruleset to use for computing the `out_grid`
+ *   fit_cells_block_sum - an array of fit cells per block to, each block writes to the corresponding index, or `NULL` if none should be collected
  */
 __global__ void gpu_simulate_step_kernel_shared(u8* in_grid, u8* out_grid, u8* ruleset, u32* fit_cells_block_sums) {
     __shared__ u8 shared_data[SHARED_SUBGRID_AREA];
@@ -305,6 +381,10 @@ __global__ void gpu_simulate_step_kernel_shared(u8* in_grid, u8* out_grid, u8* r
 
     if (x < GRID_WIDTH && y < GRID_HEIGHT) {
         fit = update_cell_shared(shared_data, out_grid, ruleset, x, y, x_shared, y_shared);
+    }
+
+    if (fit_cells_block_sums == NULL) {
+        return;
     }
 
     // initialize fit_cells_block_sum to 0
@@ -385,6 +465,10 @@ __global__ void gpu_simulate_step_kernel_noshared(u8* in_grid, u8* out_grid, u8*
 
     i32 block_index_1d = blockIdx.x + blockIdx.y * gridDim.x;
 
+    if (fit_cells_block_sums == NULL) {
+        return;
+    }
+
     // initialize fit_cells_block_sum to 0
     fit_cells_block_sums[block_index_1d] = 0;
 
@@ -394,10 +478,11 @@ __global__ void gpu_simulate_step_kernel_noshared(u8* in_grid, u8* out_grid, u8*
 }
 
 // Simulates a single iteration
-void simulate_step(simulation_t* simulation, bool async) {
+void simulate_step(simulation_t* simulation, bool async, bool reduce_fit_cells) {
     const i32 STEPS = 1;
     // might as well measure the time since we have to wait for the result anyway
     async &= !CPU_VERIFY;
+    reduce_fit_cells |= CPU_VERIFY;
     u8* gpu_grid_states_1 = NULL;
     u8* gpu_grid_states_2 = NULL;
 
@@ -411,9 +496,9 @@ void simulate_step(simulation_t* simulation, bool async) {
     // aktualizace simulace + vygenerovani bitmapy pro zobrazeni stavu simulace
     for (i32 i = 0; i < STEPS; i++) {
         if (USE_SHARED_MEMORY) {
-            gpu_simulate_step_kernel_shared<<<GRID_DIM_BLOCKS, GRID_DIM_THREADS, 0, simulation->stream>>>(gpu_grid_states_1, gpu_grid_states_2, simulation->gpu_ruleset, simulation->gpu_fit_cells_block_sums);
+            gpu_simulate_step_kernel_shared<<<DIM_BLOCKS, DIM_THREADS, 0, simulation->stream>>>(gpu_grid_states_1, gpu_grid_states_2, simulation->gpu_ruleset, reduce_fit_cells ? simulation->gpu_fit_cells_block_sums : NULL);
         } else {
-            gpu_simulate_step_kernel_noshared<<<GRID_DIM_BLOCKS, GRID_DIM_THREADS, 0, simulation->stream>>>(gpu_grid_states_1, gpu_grid_states_2, simulation->gpu_ruleset, simulation->gpu_fit_cells_block_sums);
+            gpu_simulate_step_kernel_noshared<<<DIM_BLOCKS, DIM_THREADS, 0, simulation->stream>>>(gpu_grid_states_1, gpu_grid_states_2, simulation->gpu_ruleset, reduce_fit_cells ? simulation->gpu_fit_cells_block_sums : NULL);
         }
 
         simulation_swap_buffers_gpu(simulation);
@@ -443,11 +528,11 @@ void simulate_step(simulation_t* simulation, bool async) {
         simulation_swap_buffers_cpu(simulation);
     }
 
+    cudaStreamSynchronize(simulation->stream);
     cudaMemcpyAsync(simulation->cpu_grid_states_tmp, gpu_grid_states_1, GRID_AREA_WITH_PITCH * sizeof(u8), cudaMemcpyDeviceToHost, simulation->stream);
 
-    simulation_collect_fit_cells_block_sums_async(simulation);
+    simulation_reduce_fit_cells_async(simulation);
     cudaStreamSynchronize(simulation->stream);
-    simulation_reduce_fit_cells(simulation);
 
     if (fit_cells_expected != simulation->cpu_fit_cells) {
         fprintf(stderr, "Validation error: difference in sum of fit cells -- %u on GPU, %u on CPU.\n", simulation->cpu_fit_cells, fit_cells_expected);
@@ -477,7 +562,7 @@ void simulate_step(simulation_t* simulation, bool async) {
 
 // called every frame
 void idle_func() {
-    simulate_step(&preview_simulation, false);
+    simulate_step(&preview_simulation, false, false);
     glutPostRedisplay();
 }
 
@@ -550,17 +635,19 @@ void population_simulate(array<simulation_t, POPULATION_SIZE>& simulations) {
     }
 
     for (u32 iteration = 0; iteration < FITNESS_EVAL_TO; iteration++) {
-        for (simulation_t& simulation : simulations) {
-            simulate_step(&simulation, true);
+        bool reduce_fit_cells = iteration >= FITNESS_EVAL_FROM;
 
-            if (iteration >= FITNESS_EVAL_FROM) {
-                simulation_collect_fit_cells_block_sums_async(&simulation);
+        for (simulation_t& simulation : simulations) {
+            simulate_step(&simulation, true, reduce_fit_cells);
+
+            if (reduce_fit_cells) {
+                simulation_reduce_fit_cells_async(&simulation);
             }
 
             check_sigint(&sigint_acknowledged);
         }
 
-        if (iteration >= FITNESS_EVAL_FROM) {
+        if (reduce_fit_cells) {
             // Wait for the iteration to finish
             for (simulation_t& simulation : simulations) {
                 check_sigint(&sigint_acknowledged);
@@ -570,7 +657,6 @@ void population_simulate(array<simulation_t, POPULATION_SIZE>& simulations) {
 
             // Cumulate error
             for (simulation_t& simulation : simulations) {
-                simulation_reduce_fit_cells(&simulation);
                 simulation_compute_fitness(&simulation);
                 simulation_cumulative_error_add(&simulation);
             }
@@ -586,22 +672,228 @@ void population_simulate(array<simulation_t, POPULATION_SIZE>& simulations) {
     }
 }
 
-bool simulation_cumulative_error_comparator(simulation_t& a, simulation_t& b) {
+bool comparator(evaluated_ruleset_t& a, evaluated_ruleset_t& b) {
     return a.cumulative_error < b.cumulative_error;
 }
 
-void population_order(array<simulation_t, POPULATION_SIZE>& simulations) {
-    for (simulation_t& simulation : simulations) {
-        simulation_copy_ruleset_gpu_cpu(&simulation);
+void seeker_population_order(seeker_t* seeker) {
+    /* for (simulation_t& simulation : seeker->simulations) { */
+    /*     simulation_copy_ruleset_gpu_cpu(&simulation); */
+    /* } */
+
+    /* // Wait for all rulesets to be copied */
+    /* for (simulation_t& simulation : seeker->simulations) { */
+    /*     cudaStreamSynchronize(simulation.stream); */
+    /* } */
+
+    /* std::vector<evaluated_ruleset_t> evaluated_rulesets; */
+
+    bool use_elites = seeker->population_index > 0;
+
+    for (u32 i = 0; i < POPULATION_SIZE; i++) {
+        simulation_t* simulation = &seeker->simulations[i];
+        u32 selection_index = i;
+        u8** gpu_selection_ruleset = &seeker->gpu_gpu_selection_rulesets_unordered[selection_index];
+        f32* gpu_selection_cumulative_error = &seeker->gpu_selection_cumulative_errors_unordered[selection_index];
+
+        CHECK_ERROR(cudaMemcpyAsync(gpu_selection_ruleset, &simulation->gpu_ruleset, sizeof(u8*), cudaMemcpyHostToDevice, simulation->stream));
+        CHECK_ERROR(cudaMemcpyAsync(gpu_selection_cumulative_error, &simulation->cumulative_error, sizeof(f32), cudaMemcpyHostToDevice, simulation->stream));
     }
 
-    // Wait for all rulesets to be copied
-    for (simulation_t& simulation : simulations) {
-        cudaStreamSynchronize(simulation.stream);
+    if (use_elites) {
+        for (u32 i = 0; i < POPULATION_ELITES; i++) {
+            elite_ruleset_t* elite_ruleset = &seeker->elite_rulesets[i];
+            u32 selection_index = i + POPULATION_SIZE;
+            u8** gpu_selection_ruleset = &seeker->gpu_gpu_selection_rulesets_unordered[selection_index];
+            f32* gpu_selection_cumulative_error = &seeker->gpu_selection_cumulative_errors_unordered[selection_index];
+
+            CHECK_ERROR(cudaMemcpyAsync(gpu_selection_ruleset, &elite_ruleset->gpu_ruleset, sizeof(u8*), cudaMemcpyHostToDevice, 0));
+            CHECK_ERROR(cudaMemcpyAsync(gpu_selection_cumulative_error, &elite_ruleset->cumulative_error, sizeof(f32), cudaMemcpyHostToDevice, 0));
+        }
+
+        /* u8** gpu_selection_rulesets = &seeker->gpu_gpu_selection_rulesets_unordered[POPULATION_SIZE]; */
+        /* f32* gpu_selection_cumulative_errors = &seeker->gpu_selection_cumulative_errors_unordered[POPULATION_SIZE]; */
+        /* u8** gpu_elite_rulesets = seeker->gpu_gpu_selection_rulesets_ordered; */
+        /* f32* gpu_elite_cumulative_errors = seeker->gpu_selection_cumulative_errors_ordered; */
+
+        /* cudaMemcpy(gpu_selection_rulesets, gpu_elite_rulesets, POPULATION_ELITES * sizeof(u8*), cudaMemcpyDeviceToDevice); */
+        /* cudaMemcpy(gpu_selection_cumulative_errors, gpu_elite_cumulative_errors, POPULATION_ELITES * sizeof(f32), cudaMemcpyDeviceToDevice); */
     }
 
-    // Order simulations by cumulative_error
-    sort(simulations.begin(), simulations.end(), simulation_cumulative_error_comparator);
+    cudaDeviceSynchronize();
+
+    // Order rulesets by cumulative_error
+    u32 item_count = use_elites ? POPULATION_SIZE_PLUS_ELITES : POPULATION_SIZE;
+    u32 begin_bit = 1; // skip sign bit, error is always unsigned
+    u32 end_bit = sizeof(f32) * 8;
+
+    // Get temp storage size
+    size_t temp_storage_size = 0;
+
+    CHECK_ERROR(cub::DeviceRadixSort::SortPairs(NULL, temp_storage_size, seeker->gpu_selection_cumulative_errors_unordered, seeker->gpu_selection_cumulative_errors_ordered, seeker->gpu_gpu_selection_rulesets_unordered, seeker->gpu_gpu_selection_rulesets_ordered, item_count, begin_bit, end_bit, 0, CUB_DEBUG_SYNCHRONOUS));
+    temp_storage_ensure(&seeker->temp_storage, temp_storage_size, 0);
+
+    // Sort
+    CHECK_ERROR(cub::DeviceRadixSort::SortPairs(seeker->temp_storage.allocation, seeker->temp_storage.size, seeker->gpu_selection_cumulative_errors_unordered, seeker->gpu_selection_cumulative_errors_ordered, seeker->gpu_gpu_selection_rulesets_unordered, seeker->gpu_gpu_selection_rulesets_ordered, item_count, begin_bit, end_bit, 0, CUB_DEBUG_SYNCHRONOUS));
+
+    cudaDeviceSynchronize();
+
+    u8* cpu_gpu_selection_rulesets[item_count];
+    f32 cpu_selection_cumulative_errors_ordered[item_count];
+
+    CHECK_ERROR(cudaMemcpy(&cpu_gpu_selection_rulesets, seeker->gpu_gpu_selection_rulesets_ordered, item_count * sizeof(u8*), cudaMemcpyDeviceToHost));
+    CHECK_ERROR(cudaMemcpy(&cpu_selection_cumulative_errors_ordered, seeker->gpu_selection_cumulative_errors_ordered, item_count * sizeof(f32), cudaMemcpyDeviceToHost));
+
+    // Ensure data is retrieved from the GPU.
+    cudaDeviceSynchronize();
+
+    // Copy rulesets from simulations to mutation ruleset allocations.
+    // This effectively performs the selection of POPULATION_SELECTION best candidates.
+    for (u32 i = 0; i < POPULATION_SELECTION; i++) {
+        u8* gpu_selection_ruleset = cpu_gpu_selection_rulesets[i];
+        u8* gpu_mutation_ruleset = seeker->cpu_gpu_mutation_rulesets[i];
+
+        ruleset_copy(gpu_mutation_ruleset, gpu_selection_ruleset, cudaMemcpyDeviceToDevice, 0);
+    }
+
+    // Store elite rulesets for the next selection phase.
+    for (u32 i = 0; i < POPULATION_ELITES; i++) {
+        elite_ruleset_t* elite_ruleset = &seeker->elite_rulesets[i];
+        u8* gpu_selection_ruleset = cpu_gpu_selection_rulesets[i];
+        u8* gpu_elite_ruleset = elite_ruleset->gpu_ruleset;
+        elite_ruleset->cumulative_error = cpu_selection_cumulative_errors_ordered[i];
+
+        ruleset_copy(gpu_elite_ruleset, gpu_selection_ruleset, cudaMemcpyDeviceToDevice, 0);
+    }
+
+    // Print errors
+    printf("Current errors: ");
+
+    for (u32 i = 0; i < item_count; i++) {
+        if (i > 0) {
+            printf(", ");
+        }
+
+        printf("%f", cpu_selection_cumulative_errors_ordered[i]);
+    }
+
+    printf("\n");
+
+    // Ensure all rulesets are copied.
+    cudaDeviceSynchronize();
+}
+
+__global__ void kernel_init_rngs(curandStatePhilox4_32_10_t* rngs, u64 seed) {
+    curand_init(seed, threadIdx.x, 0, &rngs[blockIdx.x]);
+}
+
+__global__ void kernel_crossover(curandStatePhilox4_32_10_t* rngs, u8* source_ruleset_a, u8* source_ruleset_b, u8* target_ruleset, u32 item_blocks, u32 ruleset_size) {
+    thread_block block = this_thread_block();
+    curandStatePhilox4_32_10_t rng = rngs[blockIdx.x]; // load RNG state from global memory
+    u32 rule_index = threadIdx.x + blockIdx.x * CROSSOVER_ITEMS_PER_BLOCK;
+
+    for (u32 item_block = 0; item_block < item_blocks; item_block++) {
+        u32vec4 bits128 = curand4(&rng);
+        u32 bits32x4[4] = { bits128.x, bits128.y, bits128.z, bits128.w };
+
+        #pragma unroll
+        for (u8 e = 0; e < 4; e++) {
+            u32 bits32 = bits32x4[e];
+
+            for (u8 i = 0; i < 32; i++) {
+                if (rule_index >= ruleset_size) {
+                    goto break_outer_loop;
+                }
+
+                bool use_a = bits32 & 1;
+                u8 rule;
+
+                if (use_a) {
+                    rule = source_ruleset_a[rule_index];
+                } else {
+                    rule = source_ruleset_b[rule_index];
+                }
+
+                target_ruleset[rule_index] = rule;
+
+                bits32 >>= 1;
+                rule_index += blockDim.x;
+            }
+        }
+    }
+
+break_outer_loop:
+
+    rngs[blockIdx.x] = rng; // store RNG state back to global memory for subsequent kernel calls
+}
+
+__global__ void kernel_mutate(curandStatePhilox4_32_10_t* rngs, u8* target_ruleset, u32 item_blocks, u32 ruleset_size) {
+    thread_block block = this_thread_block();
+    curandStatePhilox4_32_10_t rng = rngs[blockIdx.x]; // load RNG state from global memory
+    u32 rule_index = threadIdx.x + blockIdx.x * MUTATE_ITEMS_PER_BLOCK;
+
+    for (u32 item_block = 0; item_block < item_blocks; item_block++) {
+        f32vec4 rolls_opaque = curand_uniform4(&rng);
+        f32 rolls[4] = { rolls_opaque.x, rolls_opaque.y, rolls_opaque.z, rolls_opaque.w };
+
+        for (u32 i = 0; i < 4; i++) {
+            if (rule_index >= ruleset_size) {
+                goto break_outer_loop;
+            }
+
+            f32 roll = rolls[i];
+            bool mutate = roll < MUTATION_CHANCE;
+
+            if (mutate) {
+                u32 random_int = curand(&rng);
+                u8 random_rule = random_int % CELL_STATES;
+                target_ruleset[rule_index] = random_rule;
+            }
+
+            rule_index += blockDim.x;
+        }
+    }
+
+break_outer_loop:
+
+    rngs[blockIdx.x] = rng; // store RNG state back to global memory for subsequent kernel calls
+}
+
+void seeker_crossover_mutation(seeker_t* seeker) {
+    u32 ruleset_size = get_ruleset_size();
+    u32 blocks_crossover = min<u32>((ruleset_size + CROSSOVER_ITEMS_PER_BLOCK - 1) / CROSSOVER_ITEMS_PER_BLOCK, CROSSOVER_MUTATE_BLOCKS_MAX);
+    u32 item_blocks_crossover = (ruleset_size + blocks_crossover - 1) / blocks_crossover;
+    u32 blocks_mutate = min<u32>((ruleset_size + MUTATE_ITEMS_PER_BLOCK - 1) / MUTATE_ITEMS_PER_BLOCK, CROSSOVER_MUTATE_BLOCKS_MAX);
+    u32 item_blocks_mutate = (ruleset_size + blocks_mutate - 1) / blocks_mutate;
+
+    cudaDeviceSynchronize();
+
+    // Run CROSSOVER_MUTATE_KERNELS_MAX in parallel
+    for (u32 simulation_index = 0; simulation_index < POPULATION_SIZE; simulation_index++) {
+        cudaStream_t stream = seeker->streams[simulation_index % CROSSOVER_MUTATE_KERNELS_MAX];
+        simulation_t* simulation = &seeker->simulations[simulation_index];
+        u32 rng_set_index = simulation_index % CROSSOVER_MUTATE_KERNELS_MAX;
+        u64 seed = random_sample_u64();
+        u32 source_ruleset_index_a = random_sample_u32(POPULATION_SELECTION);
+        u32 source_ruleset_index_b = random_sample_u32(POPULATION_SELECTION);
+        u8* source_ruleset_a = seeker->cpu_gpu_mutation_rulesets[source_ruleset_index_a];
+        u8* source_ruleset_b = seeker->cpu_gpu_mutation_rulesets[source_ruleset_index_b];
+        curandStatePhilox4_32_10_t* rng_set = seeker->cpu_gpu_rngs[rng_set_index];
+
+        kernel_init_rngs<<<CROSSOVER_MUTATE_BLOCKS_MAX, THREADS_PER_BLOCK, 0, stream>>>(rng_set, seed);
+        kernel_crossover<<<blocks_crossover, THREADS_PER_BLOCK, 0, stream>>>(rng_set, source_ruleset_a, source_ruleset_b, simulation->gpu_ruleset, item_blocks_crossover, ruleset_size);
+        kernel_mutate<<<blocks_mutate, THREADS_PER_BLOCK, 0, stream>>>(rng_set, simulation->gpu_ruleset, item_blocks_mutate, ruleset_size);
+    }
+
+    if (CPU_VERIFY) {
+        cudaDeviceSynchronize();
+
+        for (simulation_t& simulation : seeker->simulations) {
+            simulation_copy_ruleset_gpu_cpu(&simulation);
+        }
+    }
+
+    cudaDeviceSynchronize();
 }
 
 void population_selection_mutation(array<simulation_t, POPULATION_SIZE>& simulations) {
@@ -646,75 +938,102 @@ void population_selection_mutation(array<simulation_t, POPULATION_SIZE>& simulat
     }
 }
 
-int main_seek(int argc, char **argv) {
-    initialize(argc, argv);
-    signal(SIGINT, sigint_handler_soft);
+void seeker_init(int argc, char **argv, seeker_t* seeker) {
+    temp_storage_init(&seeker->temp_storage);
 
-    vector<u8> initial_grid = vector<u8>(GRID_AREA_WITH_PITCH, 0);
+    for (cudaStream_t& stream : seeker->streams) {
+        CHECK_ERROR(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+    }
+
+    for (u32 i = 0; i < CROSSOVER_MUTATE_KERNELS_MAX; i++) {
+        CHECK_ERROR(cudaMalloc(&seeker->cpu_gpu_rngs[i], sizeof(curandStatePhilox4_32_10_t) * CROSSOVER_MUTATE_BLOCKS_MAX));
+    }
+
+    seeker->cpu_initial_grid = vector<u8>(GRID_AREA_WITH_PITCH, 0);
+
+    CHECK_ERROR(cudaMalloc(&seeker->gpu_initial_grid, GRID_AREA_WITH_PITCH * sizeof(u8)));
+    CHECK_ERROR(cudaMalloc(&seeker->gpu_gpu_mutation_rulesets, POPULATION_SELECTION * sizeof(u8*)));
+    CHECK_ERROR(cudaMalloc(&seeker->gpu_gpu_elite_rulesets, POPULATION_ELITES * sizeof(u8*)));
+    CHECK_ERROR(cudaMalloc(&seeker->gpu_gpu_selection_rulesets_unordered, POPULATION_SIZE_PLUS_ELITES * sizeof(u8*)));
+    CHECK_ERROR(cudaMalloc(&seeker->gpu_gpu_selection_rulesets_ordered, POPULATION_SIZE_PLUS_ELITES * sizeof(u8*)));
+    CHECK_ERROR(cudaMalloc(&seeker->gpu_selection_cumulative_errors_unordered, POPULATION_SIZE_PLUS_ELITES * sizeof(f32)));
+    CHECK_ERROR(cudaMalloc(&seeker->gpu_selection_cumulative_errors_ordered, POPULATION_SIZE_PLUS_ELITES * sizeof(f32)));
+
+    // Allocate space for mutation rulesets
+    for (i32 i = 0; i < POPULATION_SELECTION; i++) {
+        u8** gpu_mutation_ruleset = &seeker->cpu_gpu_mutation_rulesets[i];
+        CHECK_ERROR(cudaMalloc(gpu_mutation_ruleset, get_ruleset_size() * sizeof(u8)));
+        CHECK_ERROR(cudaMemcpy(&seeker->gpu_gpu_mutation_rulesets[i], gpu_mutation_ruleset, sizeof(u8*), cudaMemcpyHostToDevice));
+    }
+
+    // Allocate space for elite rulesets
+    for (i32 i = 0; i < POPULATION_ELITES; i++) {
+        elite_ruleset_t* elite_ruleset = &seeker->elite_rulesets[i];
+        elite_ruleset->cumulative_error = 0.0 / 0.0; // NAN
+        CHECK_ERROR(cudaMalloc(&elite_ruleset->gpu_ruleset, get_ruleset_size() * sizeof(u8)));
+        CHECK_ERROR(cudaMemcpy(&seeker->gpu_gpu_elite_rulesets[i], &elite_ruleset->gpu_ruleset, sizeof(u8*), cudaMemcpyHostToDevice));
+    }
 
     if (argc >= 3) {
         printf("Loading initial grid: %s\n", argv[2]);
-        grid_load(argv[2], &initial_grid[0]);
+        grid_load(argv[2], &seeker->cpu_initial_grid[0]);
     } else {
         printf("No initial grid provided, using a random initial grid.\n");
-        grid_init_random(&initial_grid[0]);
+        grid_init_random(&seeker->cpu_initial_grid[0]);
     }
 
-    array<simulation_t, POPULATION_SIZE> simulations;
+    CHECK_ERROR(cudaMemcpy(seeker->gpu_initial_grid, &seeker->cpu_initial_grid[0], GRID_AREA_WITH_PITCH * sizeof(u8), cudaMemcpyHostToDevice));
 
-    for (simulation_t& simulation : simulations) {
+    for (simulation_t& simulation : seeker->simulations) {
         simulation_init(&simulation, false, 0);
     }
 
-    printf("Initialized.\n");
+    seeker->population_index = 0;
 
-    i32 population_index = 0;
+    printf("Initialized.\n");
+}
+
+void seeker_loop(seeker_t* seeker) {
+    signal(SIGINT, sigint_handler_soft);
 
     while (!sigint_received) {
-        printf("Resetting grids...\n");
         // Load initial grid
-        for (simulation_t& simulation : simulations) {
-            memcpy(simulation.cpu_grid_states_1, &initial_grid[0], GRID_AREA_WITH_PITCH * sizeof(u8));
-            simulation_copy_grid_cpu_gpu(&simulation);
+        printf("Resetting grids...\n");
+        for (simulation_t& simulation : seeker->simulations) {
+            simulation_set_grid(&simulation, &seeker->cpu_initial_grid[0], seeker->gpu_initial_grid);
             cudaStreamSynchronize(simulation.stream);
         }
         printf("Grids reset finished.\n");
 
-        if (population_index > 0) {
+        if (seeker->population_index > 0) {
             printf("Performing selection & mutation...\n");
-            population_selection_mutation(simulations);
+            /* population_selection_mutation(seeker->simulations); */
+            seeker_crossover_mutation(seeker);
             printf("Selection & mutation finished.\n");
+
+            cudaDeviceSynchronize();
         }
 
-        printf("Simulating population #%u...", population_index);
-        population_simulate(simulations);
-        printf("Finished simulating population #%u.\n", population_index);
+        for (simulation_t& simulation : seeker->simulations) {
+            CHECK_ERROR(cudaStreamSynchronize(simulation.stream));
+        }
+
+        printf("Simulating population #%u...\n", seeker->population_index);
+        population_simulate(seeker->simulations);
+        printf("Finished simulating population #%u.\n", seeker->population_index);
+
+        for (simulation_t& simulation : seeker->simulations) {
+            CHECK_ERROR(cudaStreamSynchronize(simulation.stream));
+        }
+
         printf("Ordering population...\n");
-        population_order(simulations);
+        seeker_population_order(seeker);
         printf("Population ordered.\n");
 
-        {
-            printf("cumulative_error:\n");
-
-            for (simulation_t& simulation : simulations) {
-                CHECK_ERROR(cudaStreamSynchronize(simulation.stream));
-            }
-
-            for (simulation_t& simulation : simulations) {
-                simulation_cumulative_error_normalize(&simulation);
-            }
-
-            for (simulation_t& simulation : simulations) {
-                printf("%f, ", simulation.cumulative_error);
-            }
-
-            printf("\n");
-        }
-
-        population_index++;
+        seeker->population_index++;
 
         #ifdef EXIT_AFTER_POPULATIONS
-        if (population_index >= EXIT_AFTER_POPULATIONS) {
+        if (seeker->population_index >= EXIT_AFTER_POPULATIONS) {
             break;
         }
         #endif
@@ -722,7 +1041,9 @@ int main_seek(int argc, char **argv) {
 
     printf("Simulations finished.\n");
     signal(SIGINT, sigint_handler_abort);
+}
 
+void seeker_output(seeker_t* seeker) {
     u32 rulesets_to_save;
 
     printf("How many rulesets would you like to save? [1]: ");
@@ -736,7 +1057,7 @@ int main_seek(int argc, char **argv) {
     }
 
     for (u32 i = 0; i < rulesets_to_save; i++) {
-        simulation_t* simulation = &simulations[i];
+        simulation_t* simulation = &seeker->simulations[i];
         char filename[1024];
 
         snprintf(filename, 1024, "ruleset_%04u.rsr", i);
@@ -744,10 +1065,23 @@ int main_seek(int argc, char **argv) {
     }
 
     printf("%u rulesets saved.\n", rulesets_to_save);
+}
 
-    for (simulation_t& simulation : simulations) {
+void seeker_finalize(seeker_t* seeker) {
+    for (simulation_t& simulation : seeker->simulations) {
         simulation_free(&simulation);
     }
+}
+
+int main_seek(int argc, char **argv) {
+    initialize(argc, argv);
+
+    seeker_t seeker;
+
+    seeker_init(argc, argv, &seeker);
+    seeker_loop(&seeker);
+    seeker_output(&seeker);
+    seeker_finalize(&seeker);
 
     return 0;
 }

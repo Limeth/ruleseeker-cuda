@@ -249,9 +249,20 @@ void random_init() {
 u32 random_sample_u32(u32 upper_bound_exclusive) {
     if (DETERMINISTIC_RANDOMNESS) {
         // not uniform, but oh well
-        return rand() % upper_bound_exclusive;
+        return ((u32) rand()) % upper_bound_exclusive;
     } else {
         return arc4random_uniform(upper_bound_exclusive);
+    }
+}
+
+u64 random_sample_u64() {
+    if (DETERMINISTIC_RANDOMNESS) {
+        // not uniform, but oh well
+        return rand();
+    } else {
+        u64 result;
+        arc4random_buf(&result, sizeof(u64));
+        return result;
     }
 }
 
@@ -261,4 +272,29 @@ f32 random_sample_f32_normalized() {
 
 f32 random_sample_f32(f32 upper_bound_inclusive) {
     return random_sample_f32_normalized() * upper_bound_inclusive;
+}
+
+// Temporary storage for CUB-related routines
+typedef struct {
+    u8* allocation;
+    size_t size;
+} temp_storage_t;
+
+void temp_storage_init(temp_storage_t* temp_storage) {
+    temp_storage->allocation = NULL;
+    temp_storage->size = 0;
+}
+
+void temp_storage_ensure(temp_storage_t* temp_storage, size_t size, cudaStream_t stream) {
+    if (size <= temp_storage->size) {
+        return; // temp storage large enough, no need for realloc
+    }
+
+    if (temp_storage->allocation) {
+        CHECK_ERROR(cudaFreeAsync(temp_storage->allocation, stream));
+    }
+
+    CHECK_ERROR(cudaMallocAsync(&temp_storage->allocation, size, stream));
+
+    temp_storage->size = size;
 }
