@@ -19,6 +19,12 @@
 #define FITNESS_FN_TYPE_LINEAR 1
 #define FITNESS_FN_TYPE_LIKELIHOOD 2
 
+#define CROSSOVER_METHOD_UNIFORM 0 // Each rule has a chance to be used 50/50
+#define CROSSOVER_METHOD_SPLICES(N) N // Rulesets are split at N random points and joined across
+
+#define MUTATION_METHOD_UNIFORM 0 // A mutation is determined granularly per-rule -- very expensive
+#define MUTATION_METHOD_BINOMIAL_MEMCPY 1 // Number of mutations determined beforehand, then applied via memcpy's
+#define MUTATION_METHOD_BINOMIAL_KERNEL 2 // Number of mutations determined beforehand, then applied via kernel
 
 /**************************
  * START OF CONFIGURATION *
@@ -27,43 +33,43 @@
 // # Grid Geometry
 
 // [uint] simulation grid width
-#define GRID_WIDTH  200
+#define GRID_WIDTH  32
 // [uint] simulation grid height
-#define GRID_HEIGHT 100
+#define GRID_HEIGHT 32
 // [enum] the shape of the grid's cells (square for Conway's GoL)
-#define GRID_GEOMETRY GRID_GEOMETRY_TRIANGLE
+#define GRID_GEOMETRY GRID_GEOMETRY_HEXAGON
 // [enum] which cells are considered in the neighbourhood (vertex for Conway's GoL)
-#define CELL_NEIGHBOURHOOD_TYPE CELL_NEIGHBOURHOOD_TYPE_VERTEX
+#define CELL_NEIGHBOURHOOD_TYPE CELL_NEIGHBOURHOOD_TYPE_EDGE
 // [uchar] number of states a cell can become (2 for Conway's GoL)
-#define CELL_STATES 12
+#define CELL_STATES 4
 
 // Conway's GoL:
 /* #define GRID_GEOMETRY GRID_GEOMETRY_SQUARE */
 /* #define CELL_NEIGHBOURHOOD_TYPE CELL_NEIGHBOURHOOD_TYPE_VERTEX */
 /* #define CELL_STATES 2 */
 
-/* // # Seeking parameters (genetic algorithm) */
-/* #define POPULATION_SIZE 512 */
-/* // # Number of top candidates to keep for the next population, without any adjustments. */
-/* #define POPULATION_ELITES 8 */
-/* // # Number of top candidates to use for crossover and mutation (including elites). */
-/* #define POPULATION_SELECTION 256 */
-/* // # The chance that a single rule of a ruleset changes during mutation. */
-/* #define MUTATION_CHANCE 0.001 */
-// # The number of candidates to simulate simultaneously within a population, excluding elites.
-#define POPULATION_SIZE 32
-// # Number of top candidates to keep for the next population, without any adjustments.
-#define POPULATION_ELITES 2
-// # Number of top candidates to use for crossover and mutation (including elites).
-#define POPULATION_SELECTION 16
-// # The chance that a single rule of a ruleset changes during mutation.
-#define MUTATION_CHANCE 0.001
+// # Seeking parameters (genetic algorithm)
+// Number of cellular automata to simulate simultaneously.
+#define POPULATION_SIZE 256
+// Number of top candidates to keep for the next population, without any adjustments.
+#define POPULATION_ELITES 4
+// Number of top candidates to use for crossover and mutation (including elites).
+#define POPULATION_SELECTION 32
+// The chance that a single rule of a ruleset changes during mutation.
+#define MUTATION_CHANCE 0.01
+// Whether to make mutation chance dependent on rank -- lower mutation chance for high fitness candidates.
+#define MUTATION_CHANCE_ADAPTIVE_BY_RANK true
+
+#define CROSSOVER_METHOD CROSSOVER_METHOD_SPLICES(64)
+/* #define CROSSOVER_METHOD CROSSOVER_METHOD_UNIFORM */
+#define MUTATION_METHOD MUTATION_METHOD_BINOMIAL_KERNEL
+/* #define MUTATION_METHOD MUTATION_METHOD_UNIFORM */
 
 // ## Fitness function
 // [uint] the index of the iteration to start cumulating the fitness error from
 #define FITNESS_EVAL_FROM 100
 // [uint] the number of iterations to cumulate the fitness error for
-#define FITNESS_EVAL_LEN 10
+#define FITNESS_EVAL_LEN 30
 
 // Proportion
 // [enum] which cell evaluation method to use (decide whether a given cell is "fit", or not)
@@ -73,7 +79,7 @@
 // [enum] which way to evaluate the fitness function
 #define FITNESS_FN_TYPE FITNESS_FN_TYPE_LIKELIHOOD
 // [float] what is the target value of the fitness function (the value at which there is a maximum)
-#define FITNESS_FN_TARGET 0.9
+#define FITNESS_FN_TARGET 0.95f
 
 // # Miscellaneous
 
@@ -96,14 +102,14 @@
 // [uint] initial window height
 #define WINDOW_HEIGHT 800
 // [uint] max number of frames exported as PNG
-/* #define EXPORT_FRAMES 100 */
-#define PROMPT_TO_START true
+#define EXPORT_FRAMES (FITNESS_EVAL_FROM + FITNESS_EVAL_LEN)
+#define PROMPT_TO_START false
 // Close the application after this many frames. Useful for profiling. Uncomment to disable.
-/* #define EXIT_AFTER_FRAMES 10 */
+/* #define EXIT_AFTER_FRAMES 3 */
 // Close the application after this many populations. Useful for profiling. Uncomment to disable.
-#define EXIT_AFTER_POPULATIONS 3
+/* #define EXIT_AFTER_POPULATIONS 5 */
 #define USE_SHARED_MEMORY true
-#define DETERMINISTIC_RANDOMNESS true
+#define DETERMINISTIC_RANDOMNESS false
 // Whether to enable `debug_synchronous` for all CUB calls to print debug info.
 #define CUB_DEBUG_SYNCHRONOUS false
 // Max number of simultaneously running thread blocks performing crossover, each

@@ -71,6 +71,7 @@
 /* #define MUTATION_DIM_BLOCKS (dim3(MUTATION_BLOCKS)) */
 // A single `generate` invocation of the Philox 4x32 RNG generates enough bits
 // to crossover this many rules per thread.
+#define CROSSOVER_MUTATE_RNGS_PER_KERNEL (CROSSOVER_MUTATE_BLOCKS_MAX * THREADS_PER_BLOCK)
 #define CROSSOVER_ITEMS_PER_THREAD (32 * 4)
 #define CROSSOVER_ITEMS_PER_BLOCK (CROSSOVER_ITEMS_PER_THREAD * THREADS_PER_BLOCK)
 #define MUTATE_ITEMS_PER_THREAD 4

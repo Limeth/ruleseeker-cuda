@@ -15,6 +15,8 @@ typedef struct {
     GLuint gpu_vbo_grid_states_2;
     struct cudaGraphicsResource* gpu_cuda_grid_states_1;
     struct cudaGraphicsResource* gpu_cuda_grid_states_2;
+    bool gpu_cuda_grid_states_1_mapped;
+    bool gpu_cuda_grid_states_2_mapped;
 } gpu_states_opengl_t;
 
 typedef struct {
@@ -52,6 +54,9 @@ typedef struct {
     // fitness is computed.
     f32 cumulative_error;
 } simulation_t;
+
+void grid_save(char* filename, u8* grid);
+void grid_load(char* filename, u8* grid);
 
 // Capitalised because they are effectively constant
 int CPU_CELL_NEIGHBOURHOOD_COMBINATIONS = -1;
@@ -93,7 +98,7 @@ void grid_init_random(u8* grid) {
  *                   If `true`, respective OpenGL resources must already be initialized!
  *   provided_stream: The stream to use for computations. If 0, a new non-blocking stream is created.
  */
-void simulation_init(simulation_t* simulation, bool opengl_interop, cudaStream_t provided_stream) {
+void simulation_init(simulation_t* simulation, bool opengl_interop, bool randomize_ruleset_cpu, char* grid_file, bool randomize_grid, cudaStream_t provided_stream) {
     if (provided_stream) {
         simulation->stream = provided_stream;
     } else {
@@ -118,12 +123,21 @@ void simulation_init(simulation_t* simulation, bool opengl_interop, cudaStream_t
     CHECK_ERROR(cudaStreamSynchronize(simulation->stream));
 
     // Initialize ruleset. Keep first rule as 0.
-    for (i32 i = 1; i < get_ruleset_size(); i++) {
-        simulation->cpu_ruleset[i] = (u8) random_sample_u32(CELL_STATES);
+    if (randomize_ruleset_cpu) {
+        for (i32 i = 1; i < get_ruleset_size(); i++) {
+            simulation->cpu_ruleset[i] = (u8) random_sample_u32(CELL_STATES);
+        }
+    } else {
+        memset(simulation->cpu_ruleset, 0, get_ruleset_size());
     }
 
-    grid_init_random(simulation->cpu_grid_states_1);
-    /* simulation->cpu_grid_states_1[(GRID_HEIGHT / 2) * GRID_PITCH + GRID_WIDTH / 2] = 1; */
+    if (grid_file) {
+        grid_load(grid_file, simulation->cpu_grid_states_1);
+    } else if (randomize_grid) {
+        grid_init_random(simulation->cpu_grid_states_1);
+    } else {
+        // All cells initialized to state 0.
+    }
 
     CHECK_ERROR(cudaStreamSynchronize(simulation->stream));
 
@@ -138,6 +152,9 @@ void simulation_init(simulation_t* simulation, bool opengl_interop, cudaStream_t
 
         CHECK_ERROR(cudaGraphicsResourceGetMappedPointer((void**) &gpu_grid_states_1, NULL, simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_1));
         CHECK_ERROR(cudaGraphicsResourceGetMappedPointer((void**) &gpu_grid_states_2, NULL, simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_2));
+
+        simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_1_mapped = true;
+        simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_2_mapped = true;
     } else {
         simulation->gpu_states.type = STATES_TYPE_CUDA;
 
@@ -155,6 +172,8 @@ void simulation_init(simulation_t* simulation, bool opengl_interop, cudaStream_t
     if (simulation->gpu_states.type == STATES_TYPE_OPENGL) {
         CHECK_ERROR(cudaGraphicsUnmapResources(1, &simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_1, simulation->stream));
         CHECK_ERROR(cudaGraphicsUnmapResources(1, &simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_2, simulation->stream));
+        simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_1_mapped = false;
+        simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_2_mapped = false;
     }
 
     CHECK_ERROR(cudaMemcpyAsync(simulation->gpu_ruleset, simulation->cpu_ruleset, get_ruleset_size() * sizeof(u8), cudaMemcpyHostToDevice, simulation->stream));
@@ -203,22 +222,28 @@ void simulation_swap_buffers_cpu(simulation_t* simulation) {
 
 void simulation_gpu_states_map(simulation_t* simulation, u8** gpu_grid_states_1, u8** gpu_grid_states_2) {
     if (simulation->gpu_states.type == STATES_TYPE_OPENGL) {
-        if (gpu_grid_states_1) {
-            CHECK_ERROR(cudaGraphicsMapResources(1, &simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_1, simulation->stream));
-            CHECK_ERROR(cudaGraphicsResourceGetMappedPointer((void**) gpu_grid_states_1, NULL, simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_1));
+        gpu_states_opengl_t* opengl = &simulation->gpu_states.gpu_states.opengl;
+
+        if (gpu_grid_states_1 != NULL && !opengl->gpu_cuda_grid_states_1_mapped) {
+            CHECK_ERROR(cudaGraphicsMapResources(1, &opengl->gpu_cuda_grid_states_1, simulation->stream));
+            CHECK_ERROR(cudaGraphicsResourceGetMappedPointer((void**) gpu_grid_states_1, NULL, opengl->gpu_cuda_grid_states_1));
+            opengl->gpu_cuda_grid_states_1_mapped = true;
         }
 
-        if (gpu_grid_states_2) {
-            CHECK_ERROR(cudaGraphicsMapResources(1, &simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_2, simulation->stream));
-            CHECK_ERROR(cudaGraphicsResourceGetMappedPointer((void**) gpu_grid_states_2, NULL, simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_2));
+        if (gpu_grid_states_2 != NULL && !opengl->gpu_cuda_grid_states_2_mapped) {
+            CHECK_ERROR(cudaGraphicsMapResources(1, &opengl->gpu_cuda_grid_states_2, simulation->stream));
+            CHECK_ERROR(cudaGraphicsResourceGetMappedPointer((void**) gpu_grid_states_2, NULL, opengl->gpu_cuda_grid_states_2));
+            opengl->gpu_cuda_grid_states_2_mapped = true;
         }
     } else if (simulation->gpu_states.type == STATES_TYPE_CUDA) {
+        gpu_states_cuda_t* cuda = &simulation->gpu_states.gpu_states.cuda;
+
         if (gpu_grid_states_1) {
-            *gpu_grid_states_1 = simulation->gpu_states.gpu_states.cuda.gpu_cuda_grid_states_1;
+            *gpu_grid_states_1 = cuda->gpu_cuda_grid_states_1;
         }
 
         if (gpu_grid_states_2) {
-            *gpu_grid_states_2 = simulation->gpu_states.gpu_states.cuda.gpu_cuda_grid_states_2;
+            *gpu_grid_states_2 = cuda->gpu_cuda_grid_states_2;
         }
     } else {
         fprintf(stderr, "Cannot map states of an uninitialized simulation.\n");
@@ -228,8 +253,17 @@ void simulation_gpu_states_map(simulation_t* simulation, u8** gpu_grid_states_1,
 
 void simulation_gpu_states_unmap(simulation_t* simulation) {
     if (simulation->gpu_states.type == STATES_TYPE_OPENGL) {
-        CHECK_ERROR(cudaGraphicsUnmapResources(1, &simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_1, simulation->stream));
-        CHECK_ERROR(cudaGraphicsUnmapResources(1, &simulation->gpu_states.gpu_states.opengl.gpu_cuda_grid_states_2, simulation->stream));
+        gpu_states_opengl_t* opengl = &simulation->gpu_states.gpu_states.opengl;
+
+        if (opengl->gpu_cuda_grid_states_1_mapped) {
+            CHECK_ERROR(cudaGraphicsUnmapResources(1, &opengl->gpu_cuda_grid_states_1, simulation->stream));
+            opengl->gpu_cuda_grid_states_1_mapped = false;
+        }
+
+        if (opengl->gpu_cuda_grid_states_2_mapped) {
+            CHECK_ERROR(cudaGraphicsUnmapResources(1, &opengl->gpu_cuda_grid_states_2, simulation->stream));
+            opengl->gpu_cuda_grid_states_2_mapped = false;
+        }
     } else if (simulation->gpu_states.type == STATES_TYPE_CUDA) {
         // noop
     } else {
@@ -241,7 +275,7 @@ void simulation_gpu_states_unmap(simulation_t* simulation) {
 // Writes a ruleset to a file
 void ruleset_save(char* filename, u8* ruleset) {
     if (!file_write(filename, ruleset, get_ruleset_size())) {
-        fprintf(stderr, "Failed to write a ruleset.");
+        fprintf(stderr, "Failed to write a ruleset.\n");
         exit(1);
     }
 }
@@ -249,7 +283,7 @@ void ruleset_save(char* filename, u8* ruleset) {
 // Loads a ruleset from a file to a pre-allocated buffer
 void ruleset_load(char* filename, u8* ruleset) {
     if (!file_load(filename, ruleset, get_ruleset_size())) {
-        fprintf(stderr, "Failed to load a ruleset.");
+        fprintf(stderr, "Failed to load a ruleset.\n");
         exit(1);
     }
 }
@@ -300,14 +334,14 @@ void simulation_ruleset_load(simulation_t* simulation, char* filename) {
 
 void grid_save(char* filename, u8* grid) {
     if (!file_write_2d_pitch(filename, grid, GRID_WIDTH, GRID_HEIGHT, GRID_PITCH)) {
-        fprintf(stderr, "Failed to write a grid.");
+        fprintf(stderr, "Failed to write a grid.\n");
         exit(1);
     }
 }
 
 void grid_load(char* filename, u8* grid) {
     if (!file_load_2d_pitch(filename, grid, GRID_WIDTH, GRID_HEIGHT, GRID_PITCH)) {
-        fprintf(stderr, "Failed to load a grid.");
+        fprintf(stderr, "Failed to load a grid.\n");
         exit(1);
     }
 }
@@ -341,9 +375,15 @@ void simulation_compute_fitness(simulation_t* simulation) {
     const f32 p = FITNESS_FN_TARGET;
 
     if (FITNESS_FN_TYPE == FITNESS_FN_TYPE_ABS) {
-        fitness = abs(x - p);
+        fitness = 1.0f - abs(x - p);
     } else if (FITNESS_FN_TYPE == FITNESS_FN_TYPE_LINEAR) {
-        fitness = min(x / p, (1.0f - x) / (1.0f - p));
+        if (FITNESS_FN_TARGET == 0.0f) {
+            fitness = (1.0f - x) / (1.0f - p);
+        } else if (FITNESS_FN_TARGET == 1.0f) {
+            fitness = x / p;
+        } else {
+            fitness = min(x / p, (1.0f - x) / (1.0f - p));
+        }
     } else if (FITNESS_FN_TYPE == FITNESS_FN_TYPE_LIKELIHOOD) {
         // normalize to fit values exactly in the range [0; 1]
         const f32 normalization_factor = 1.0f / (powf(1.0f - p, 1.0f - p) * powf(p, p));

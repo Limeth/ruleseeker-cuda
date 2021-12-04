@@ -1,5 +1,5 @@
 // (1) Prepended version directive
-// (2) Prepended config.h header
+// (2) Prepended common.h header
 #define TAU 6.28318530717958647692528676655900576839433879875021
 
 layout (location = 0) in uint in_cell_state_current;
@@ -8,6 +8,7 @@ layout (location = 1) in uint in_cell_state_previous;
 layout (location = 0) out flat uint out_cell_state_current;
 layout (location = 1) out flat uint out_cell_state_previous;
 layout (location = 2) out flat vec3 out_color;
+layout (location = 3) out flat uint out_cell_index;
 
 uniform uvec2 window_resolution;
 
@@ -20,6 +21,7 @@ vec3 hsv2rgb(vec3 c) {
 
 void main() {
     int cell_index = gl_InstanceID + gl_BaseInstance;
+    out_cell_index = cell_index;
     uint grid_pitch; GET_GRID_PITCH(grid_pitch)
     ivec2 cell = ivec2(cell_index % grid_pitch, cell_index / grid_pitch);
 

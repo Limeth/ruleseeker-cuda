@@ -1,10 +1,11 @@
 #include <algorithm>
+#include <boost/math/distributions/fwd.hpp>
 #include <signal.h>
 #include <stdio.h>
 #include <iostream>
 #include <stdlib.h>
 #include <GL/glew.h>
-#include <GL/freeglut.h>
+#include <GLFW/glfw3.h>
 #include <array>
 #include <vector>
 #include <cub/cub.cuh>
@@ -12,6 +13,8 @@
 #include <cooperative_groups.h>
 #include <boost/math/distributions/binomial.hpp>
 #include "common.h"
+#include "config.h"
+#include "config_derived.h"
 #include "util.cuh"
 #include "draw.cuh"
 #include "math.cuh"
@@ -237,11 +240,13 @@ __inline__ __host__ __device__ i32 get_cell_index(i32 x, i32 y) {
 }
 
 __inline__ __host__ __device__ bool cell_state_fit(u8 state_prev, u8 state_next) {
-#if FITNESS_EVAL == FITNESS_EVAL_STATE
-    return state_next == FITNESS_EVAL_STATE_INDEX;
-#elif FITNESS_EVAL == FITNESS_EVAL_UPDATE
-    return state_prev != state_next;
-#endif
+    if (FITNESS_EVAL == FITNESS_EVAL_STATE) {
+        return state_next == FITNESS_EVAL_STATE_INDEX;
+    } else if (FITNESS_EVAL == FITNESS_EVAL_UPDATE) {
+        return state_prev != state_next;
+    } else {
+        return false;
+    }
 }
 
 __host__ __device__ u8 get_next_state(u8 current_state, u8* neighbours, u8* ruleset) {
@@ -541,7 +546,6 @@ void simulate_step(simulation_t* simulation, bool async, bool reduce_fit_cells) 
     // Compare states
     u32 diffs = 0;
 
-    // porovnani vysledku CPU simulace a GPU simulace
     for (i32 y = 0; y < GRID_HEIGHT; y++) {
         for (i32 x = 0; x < GRID_WIDTH; x++) {
             i32 cell_index = get_cell_index(x, y);
@@ -562,30 +566,41 @@ void simulate_step(simulation_t* simulation, bool async, bool reduce_fit_cells) 
 
 // called every frame
 void idle_func() {
-    simulate_step(&preview_simulation, false, false);
-    glutPostRedisplay();
+    if (!editing_mode) {
+        simulate_step(&preview_simulation, false, false);
+    }
 }
 
 void finalize(void);
 
-static void handle_keys(unsigned char key, int x, int y) {
-    switch (key) {
-        case 27:	// ESC
-            finalize();
-            exit(0);
-    }
+void window_close_callback(GLFWwindow* window) {
+    finalize();
 }
 
 // inicializace CUDA - alokace potrebnych dat a vygenerovani pocatecniho stavu lifu
 void initialize(int argc, char **argv) {
-    if (preview_simulation.gpu_states.type != STATES_TYPE_UNDEF) {
-        simulation_init(&preview_simulation, true, 0);
+    char* grid_file = argv[2];
 
-        if (argc >= 4) {
-            printf("Loading ruleset: %s\n", argv[3]);
-            simulation_ruleset_load(&preview_simulation, argv[3]);
+    if (access(grid_file, F_OK) != 0) {
+        if (editing_mode) {
+            // File may not exist, in that case, we are creating a new grid.
+            grid_file = NULL;
         } else {
-            printf("No path to ruleset provided, using a random ruleset.\n");
+            fprintf(stderr, "Specified grid file not found: %s\n", grid_file);
+            exit(1);
+        }
+    }
+
+    if (preview_simulation.gpu_states.type != STATES_TYPE_UNDEF) {
+        simulation_init(&preview_simulation, true, true, grid_file, randomize_grid, 0);
+
+        if (!editing_mode) {
+            if (argc >= 4) {
+                printf("Loading ruleset: %s\n", argv[3]);
+                simulation_ruleset_load(&preview_simulation, argv[3]);
+            } else {
+                printf("No path to ruleset provided, using a random ruleset.\n");
+            }
         }
 
         printf("\n");
@@ -661,11 +676,11 @@ void population_simulate(array<simulation_t, POPULATION_SIZE>& simulations) {
                 simulation_cumulative_error_add(&simulation);
             }
 
-            /* for (simulation_t& simulation : simulations) { */
-            /*     printf("%f, ", simulation.fitness); */
+            /* for (u32 i = 0; i < POPULATION_SIZE; i++) { */
+            /*     simulation_t* simulation = &simulations[i]; */
+            /*     printf("simulation[%d] { fit_cells: %d, fitness: %f, cumulative_error: %f }\n", */
+            /*             i, simulation->cpu_fit_cells, simulation->fitness, simulation->cumulative_error); */
             /* } */
-
-            /* printf("\n"); */
         }
 
         check_sigint(&sigint_acknowledged);
@@ -784,12 +799,13 @@ void seeker_population_order(seeker_t* seeker) {
 }
 
 __global__ void kernel_init_rngs(curandStatePhilox4_32_10_t* rngs, u64 seed) {
-    curand_init(seed, threadIdx.x, 0, &rngs[blockIdx.x]);
+    int rng_index = threadIdx.x + blockIdx.x * blockDim.x;
+    curand_init(seed, rng_index, 0, &rngs[rng_index]);
 }
 
 __global__ void kernel_crossover(curandStatePhilox4_32_10_t* rngs, u8* source_ruleset_a, u8* source_ruleset_b, u8* target_ruleset, u32 item_blocks, u32 ruleset_size) {
-    thread_block block = this_thread_block();
-    curandStatePhilox4_32_10_t rng = rngs[blockIdx.x]; // load RNG state from global memory
+    int rng_index = threadIdx.x + blockIdx.x * blockDim.x;
+    curandStatePhilox4_32_10_t rng = rngs[rng_index]; // load RNG state from global memory
     u32 rule_index = threadIdx.x + blockIdx.x * CROSSOVER_ITEMS_PER_BLOCK;
 
     for (u32 item_block = 0; item_block < item_blocks; item_block++) {
@@ -824,12 +840,38 @@ __global__ void kernel_crossover(curandStatePhilox4_32_10_t* rngs, u8* source_ru
 
 break_outer_loop:
 
-    rngs[blockIdx.x] = rng; // store RNG state back to global memory for subsequent kernel calls
+    rngs[rng_index] = rng; // store RNG state back to global memory for subsequent kernel calls
 }
 
-__global__ void kernel_mutate(curandStatePhilox4_32_10_t* rngs, u8* target_ruleset, u32 item_blocks, u32 ruleset_size) {
-    thread_block block = this_thread_block();
-    curandStatePhilox4_32_10_t rng = rngs[blockIdx.x]; // load RNG state from global memory
+__global__ void kernel_randomize_ruleset(curandStatePhilox4_32_10_t* rngs, u8* target_ruleset, u32 item_blocks, u32 ruleset_size) {
+    int rng_index = threadIdx.x + blockIdx.x * blockDim.x;
+    curandStatePhilox4_32_10_t rng = rngs[rng_index]; // load RNG state from global memory
+    u32 rule_index = threadIdx.x + blockIdx.x * MUTATE_ITEMS_PER_BLOCK;
+
+    for (u32 item_block = 0; item_block < item_blocks; item_block++) {
+        u32vec4 rolls_opaque = curand4(&rng);
+        u32 rolls[4] = { rolls_opaque.x, rolls_opaque.y, rolls_opaque.z, rolls_opaque.w };
+
+        for (u32 i = 0; i < 4; i++) {
+            if (rule_index >= ruleset_size) {
+                goto break_outer_loop;
+            }
+
+            u32 rule = rolls[i] % CELL_STATES; // FIXME: Not uniform
+            target_ruleset[rule_index] = rule;
+
+            rule_index += blockDim.x;
+        }
+    }
+
+break_outer_loop:
+
+    rngs[rng_index] = rng; // store RNG state back to global memory for subsequent kernel calls
+}
+
+__global__ void kernel_mutate_uniform(curandStatePhilox4_32_10_t* rngs, u8* target_ruleset, u32 item_blocks, u32 ruleset_size, f32 mutation_chance) {
+    int rng_index = threadIdx.x + blockIdx.x * blockDim.x;
+    curandStatePhilox4_32_10_t rng = rngs[rng_index]; // load RNG state from global memory
     u32 rule_index = threadIdx.x + blockIdx.x * MUTATE_ITEMS_PER_BLOCK;
 
     for (u32 item_block = 0; item_block < item_blocks; item_block++) {
@@ -842,11 +884,11 @@ __global__ void kernel_mutate(curandStatePhilox4_32_10_t* rngs, u8* target_rules
             }
 
             f32 roll = rolls[i];
-            bool mutate = roll < MUTATION_CHANCE;
+            bool mutate = roll < mutation_chance;
 
             if (mutate) {
                 u32 random_int = curand(&rng);
-                u8 random_rule = random_int % CELL_STATES;
+                u8 random_rule = random_int % CELL_STATES; // FIXME: Not uniform
                 target_ruleset[rule_index] = random_rule;
             }
 
@@ -856,15 +898,109 @@ __global__ void kernel_mutate(curandStatePhilox4_32_10_t* rngs, u8* target_rules
 
 break_outer_loop:
 
-    rngs[blockIdx.x] = rng; // store RNG state back to global memory for subsequent kernel calls
+    rngs[rng_index] = rng; // store RNG state back to global memory for subsequent kernel calls
+}
+
+__global__ void kernel_mutate_binomial(curandStatePhilox4_32_10_t* rngs, u8* target_ruleset, u32 item_blocks, u32 ruleset_size, u32 mutations) {
+    int rng_index = threadIdx.x + blockIdx.x * blockDim.x;
+    curandStatePhilox4_32_10_t rng = rngs[rng_index]; // load RNG state from global memory
+    u32 mutation_index = threadIdx.x + blockIdx.x * MUTATE_ITEMS_PER_BLOCK;
+
+    for (u32 item_block = 0; item_block < item_blocks; item_block++) {
+        u32vec4 rolls_rule_index_opaque = curand4(&rng);
+        u32vec4 rolls_rule_opaque = curand4(&rng);
+        u32 rolls_rule_index[4] = { rolls_rule_index_opaque.x, rolls_rule_index_opaque.y, rolls_rule_index_opaque.z, rolls_rule_index_opaque.w };
+        u32 rolls_rule[4] = { rolls_rule_opaque.x, rolls_rule_opaque.y, rolls_rule_opaque.z, rolls_rule_opaque.w };
+
+        for (u32 i = 0; i < 4; i++) {
+            if (mutation_index >= mutations) {
+                goto break_outer_loop;
+            }
+
+            u32 rule_index = rolls_rule_index[i] % ruleset_size; // FIXME: Not uniform
+            u8 rule = rolls_rule[i] % CELL_STATES; // FIXME: Not uniform
+
+            // Note: This is an intentional race condition, as multiple threads from the same block
+            // or different blocks may attempt to write into the same byte.
+            target_ruleset[rule_index] = rule;
+
+            mutation_index += blockDim.x;
+        }
+    }
+
+break_outer_loop:
+
+    rngs[rng_index] = rng;
+}
+
+void seed_rng_set(curandStatePhilox4_32_10_t* rng_set, cudaStream_t stream) {
+    u64 seed = random_sample_u64();
+    kernel_init_rngs<<<CROSSOVER_MUTATE_BLOCKS_MAX, THREADS_PER_BLOCK, 0, stream>>>(rng_set, seed);
+}
+
+void seeker_randomize_rulesets(seeker_t* seeker) {
+    u32 ruleset_size = get_ruleset_size();
+    u32 blocks = min<u32>((ruleset_size + MUTATE_ITEMS_PER_BLOCK - 1) / MUTATE_ITEMS_PER_BLOCK, CROSSOVER_MUTATE_BLOCKS_MAX);
+    u32 item_blocks = (ruleset_size + blocks - 1) / blocks;
+
+    if (CPU_VERIFY) {
+        if (CELL_STATES >= 0x100) {
+            fprintf(stderr, "Cannot verify proper randomization of rulesets for `CELL_STATES` larger than 255.\n");
+            exit(1);
+        }
+
+        for (simulation_t& simulation : seeker->simulations) {
+            CHECK_ERROR(cudaMemsetAsync(simulation.gpu_ruleset, 0xFF, ruleset_size, simulation.stream));
+        }
+
+        cudaDeviceSynchronize();
+    }
+
+    for (u32 simulation_index = 0; simulation_index < POPULATION_SIZE; simulation_index++) {
+        cudaStream_t stream = seeker->streams[simulation_index % CROSSOVER_MUTATE_KERNELS_MAX];
+        simulation_t* simulation = &seeker->simulations[simulation_index];
+        u32 rng_set_index = simulation_index % CROSSOVER_MUTATE_KERNELS_MAX;
+        curandStatePhilox4_32_10_t* rng_set = seeker->cpu_gpu_rngs[rng_set_index];
+
+        seed_rng_set(rng_set, stream);
+        kernel_randomize_ruleset<<<blocks, THREADS_PER_BLOCK, 0, stream>>>(rng_set, simulation->gpu_ruleset, item_blocks, ruleset_size);
+    }
+
+    if (CPU_VERIFY) {
+        cudaDeviceSynchronize();
+
+        for (simulation_t& simulation : seeker->simulations) {
+            simulation_copy_ruleset_gpu_cpu(&simulation);
+        }
+
+        cudaDeviceSynchronize();
+        printf("Verifying ruleset randomization...\n");
+
+        for (u32 simulation_index = 0; simulation_index < POPULATION_SIZE; simulation_index++) {
+            simulation_t* simulation = &seeker->simulations[simulation_index];
+
+            for (u32 rule_index = 0; rule_index < ruleset_size; rule_index++) {
+                u32 rule = simulation->cpu_ruleset[rule_index];
+
+                if (rule >= CELL_STATES) {
+                    fprintf(stderr, "Ruleset randomization verification failed:\n");
+                    fprintf(stderr, "Rule #%u of simulation #%u is invalid: %u\n", rule_index, simulation_index, rule);
+                    exit(1);
+                }
+            }
+        }
+
+        printf("Ruleset randomization verified.\n");
+    }
+
+    cudaDeviceSynchronize();
 }
 
 void seeker_crossover_mutation(seeker_t* seeker) {
     u32 ruleset_size = get_ruleset_size();
     u32 blocks_crossover = min<u32>((ruleset_size + CROSSOVER_ITEMS_PER_BLOCK - 1) / CROSSOVER_ITEMS_PER_BLOCK, CROSSOVER_MUTATE_BLOCKS_MAX);
     u32 item_blocks_crossover = (ruleset_size + blocks_crossover - 1) / blocks_crossover;
-    u32 blocks_mutate = min<u32>((ruleset_size + MUTATE_ITEMS_PER_BLOCK - 1) / MUTATE_ITEMS_PER_BLOCK, CROSSOVER_MUTATE_BLOCKS_MAX);
-    u32 item_blocks_mutate = (ruleset_size + blocks_mutate - 1) / blocks_mutate;
+    array<f32, POPULATION_SIZE> mutation_chances;
 
     cudaDeviceSynchronize();
 
@@ -873,16 +1009,146 @@ void seeker_crossover_mutation(seeker_t* seeker) {
         cudaStream_t stream = seeker->streams[simulation_index % CROSSOVER_MUTATE_KERNELS_MAX];
         simulation_t* simulation = &seeker->simulations[simulation_index];
         u32 rng_set_index = simulation_index % CROSSOVER_MUTATE_KERNELS_MAX;
-        u64 seed = random_sample_u64();
         u32 source_ruleset_index_a = random_sample_u32(POPULATION_SELECTION);
         u32 source_ruleset_index_b = random_sample_u32(POPULATION_SELECTION);
+
+        /* while (source_ruleset_index_a == source_ruleset_index_b) { */
+        /*     source_ruleset_index_b = random_sample_u32(POPULATION_SELECTION); */
+        /* } */
+
         u8* source_ruleset_a = seeker->cpu_gpu_mutation_rulesets[source_ruleset_index_a];
         u8* source_ruleset_b = seeker->cpu_gpu_mutation_rulesets[source_ruleset_index_b];
         curandStatePhilox4_32_10_t* rng_set = seeker->cpu_gpu_rngs[rng_set_index];
 
-        kernel_init_rngs<<<CROSSOVER_MUTATE_BLOCKS_MAX, THREADS_PER_BLOCK, 0, stream>>>(rng_set, seed);
-        kernel_crossover<<<blocks_crossover, THREADS_PER_BLOCK, 0, stream>>>(rng_set, source_ruleset_a, source_ruleset_b, simulation->gpu_ruleset, item_blocks_crossover, ruleset_size);
-        kernel_mutate<<<blocks_mutate, THREADS_PER_BLOCK, 0, stream>>>(rng_set, simulation->gpu_ruleset, item_blocks_mutate, ruleset_size);
+        f32 mutation_chance;
+
+        if (MUTATION_CHANCE_ADAPTIVE_BY_RANK) {
+            // A variation on rank-based adaptive mutation: https://arxiv.org/pdf/2104.08842.pdf
+            f32 average_rank = ((f32) (source_ruleset_index_a + source_ruleset_index_b)) * 0.5f;
+            mutation_chance = MUTATION_CHANCE * ((average_rank + 1.0f) / (f32) POPULATION_SIZE);
+        } else {
+            mutation_chance = MUTATION_CHANCE;
+        }
+
+        mutation_chances[simulation_index] = mutation_chance;
+
+        if (source_ruleset_index_a == source_ruleset_index_b) {
+            // Crossover between the same rulesets
+            CHECK_ERROR(cudaMemcpyAsync(simulation->gpu_ruleset, source_ruleset_a, ruleset_size * sizeof(u8), cudaMemcpyDeviceToDevice, stream));
+        } else {
+            if (CROSSOVER_METHOD == CROSSOVER_METHOD_UNIFORM) {
+                seed_rng_set(rng_set, stream);
+                kernel_crossover<<<blocks_crossover, THREADS_PER_BLOCK, 0, stream>>>(rng_set, source_ruleset_a, source_ruleset_b, simulation->gpu_ruleset, item_blocks_crossover, ruleset_size);
+            } else { // Splice method
+                bool order = random_sample_u32(2);
+
+                if (order) {
+                    swap(source_ruleset_a, source_ruleset_b);
+                }
+
+                std::array<u32, CROSSOVER_METHOD> splice_indices;
+
+                for (u32& splice_index : splice_indices) {
+                    splice_index = random_sample_u32(ruleset_size + 1);
+                }
+
+                std::sort(splice_indices.begin(), splice_indices.end());
+
+                u32 write_offset = 0;
+
+                for (u32 i = 0; i < CROSSOVER_METHOD; i++) {
+                    u32 splice_index = splice_indices[i];
+                    u32 difference = splice_index - write_offset;
+
+                    if (difference > 0) {
+                        CHECK_ERROR(cudaMemcpyAsync(&simulation->gpu_ruleset[write_offset], &source_ruleset_a[write_offset], difference * sizeof(u8), cudaMemcpyDeviceToDevice, stream));
+                    }
+
+                    swap(source_ruleset_a, source_ruleset_b);
+                    write_offset = splice_index;
+                }
+
+                u32 remaining_length = ruleset_size - write_offset;
+
+                if (remaining_length > 0) {
+                    CHECK_ERROR(cudaMemcpyAsync(&simulation->gpu_ruleset[write_offset], &source_ruleset_a[write_offset], remaining_length * sizeof(u8), cudaMemcpyDeviceToDevice, stream));
+                }
+            }
+        }
+    }
+
+    u32 blocks_mutate_uniform = min<u32>((ruleset_size + MUTATE_ITEMS_PER_BLOCK - 1) / MUTATE_ITEMS_PER_BLOCK, CROSSOVER_MUTATE_BLOCKS_MAX);
+    u32 item_blocks_mutate_uniform = (ruleset_size + blocks_mutate_uniform - 1) / blocks_mutate_uniform;
+
+    // Wait for crossover to finish
+    cudaDeviceSynchronize();
+
+    if (MUTATION_METHOD == MUTATION_METHOD_UNIFORM) {
+        for (u32 simulation_index = 0; simulation_index < POPULATION_SIZE; simulation_index++) {
+            cudaStream_t stream = seeker->streams[simulation_index % CROSSOVER_MUTATE_KERNELS_MAX];
+            simulation_t* simulation = &seeker->simulations[simulation_index];
+            u32 rng_set_index = simulation_index % CROSSOVER_MUTATE_KERNELS_MAX;
+            curandStatePhilox4_32_10_t* rng_set = seeker->cpu_gpu_rngs[rng_set_index];
+            f32 mutation_chance = mutation_chances[simulation_index];
+
+            seed_rng_set(rng_set, stream);
+            kernel_mutate_uniform<<<blocks_mutate_uniform, THREADS_PER_BLOCK, 0, stream>>>(rng_set, simulation->gpu_ruleset, item_blocks_mutate_uniform, ruleset_size, mutation_chance);
+        }
+    } else if (MUTATION_METHOD == MUTATION_METHOD_BINOMIAL_MEMCPY || MUTATION_METHOD == MUTATION_METHOD_BINOMIAL_KERNEL) {
+        for (u32 simulation_index = 0; simulation_index < POPULATION_SIZE; simulation_index++) {
+            simulation_t* simulation = &seeker->simulations[simulation_index];
+
+            f32 mutation_chance = mutation_chances[simulation_index];
+            f64 n = ruleset_size;
+            f64 p = mutation_chance;
+            boost::math::binomial_distribution<f64> distribution = boost::math::binomial(n, p);
+
+            f64 uniform = random_sample_f64_normalized();
+            f64 binomial = boost::math::quantile(distribution, uniform);
+            u32 mutations = (u32) round(binomial);
+
+            if (mutations <= 0) {
+                continue;
+            }
+
+            if (MUTATION_METHOD == MUTATION_METHOD_BINOMIAL_MEMCPY) {
+                for (u32 mutation = 0; mutation < mutations; mutation++) {
+                    u32 rule_index = random_sample_u32(ruleset_size);
+                    u8 rule = (u8) random_sample_u32(CELL_STATES);
+
+                    // First, store the rule in the CPU index. This is necessary, because we need to be able
+                    // to continue with the following iterations while the rule is being copied to the GPU.
+                    // We wouldn't be able to upload it from the stack.
+                    u8* gpu_rule = &simulation->gpu_ruleset[rule_index];
+                    u8* cpu_rule = &simulation->cpu_ruleset[rule_index];
+
+                    if (CPU_VERIFY) {
+                        *cpu_rule = rule;
+                    }
+
+                    /* CHECK_ERROR(cudaMemcpyAsync(gpu_rule, cpu_rule, sizeof(u8), cudaMemcpyHostToDevice, simulation->stream)); */
+                    CHECK_ERROR(cudaMemsetAsync(gpu_rule, rule, sizeof(u8), simulation->stream));
+                }
+            } else if (MUTATION_METHOD == MUTATION_METHOD_BINOMIAL_KERNEL) {
+                u32 blocks_mutate_binomial = min<u32>((mutations + MUTATE_ITEMS_PER_BLOCK - 1) / MUTATE_ITEMS_PER_BLOCK, CROSSOVER_MUTATE_BLOCKS_MAX);
+                u32 item_blocks_mutate_binomial = (ruleset_size + blocks_mutate_binomial - 1) / blocks_mutate_binomial;
+
+                cudaStream_t stream = seeker->streams[simulation_index % CROSSOVER_MUTATE_KERNELS_MAX];
+                simulation_t* simulation = &seeker->simulations[simulation_index];
+                u32 rng_set_index = simulation_index % CROSSOVER_MUTATE_KERNELS_MAX;
+                u64 seed = random_sample_u64();
+                curandStatePhilox4_32_10_t* rng_set = seeker->cpu_gpu_rngs[rng_set_index];
+
+                seed_rng_set(rng_set, stream);
+                kernel_mutate_binomial<<<blocks_mutate_binomial, THREADS_PER_BLOCK, 0, stream>>>(rng_set, simulation->gpu_ruleset, item_blocks_mutate_binomial, ruleset_size, mutations);
+            } else {
+                fprintf(stderr, "unreachable\n");
+                exit(1);
+            }
+        }
+    } else {
+        fprintf(stderr, "unreachable\n");
+        exit(1);
     }
 
     if (CPU_VERIFY) {
@@ -896,48 +1162,6 @@ void seeker_crossover_mutation(seeker_t* seeker) {
     cudaDeviceSynchronize();
 }
 
-void population_selection_mutation(array<simulation_t, POPULATION_SIZE>& simulations) {
-    u32 ruleset_size = get_ruleset_size();
-
-    std::vector<std::vector<u8>> rulesets;
-
-    // Initialize rulesets
-    while (rulesets.size() < POPULATION_SIZE) {
-        std::vector<u8> ruleset = std::vector<u8>(ruleset_size, 0);
-        rulesets.push_back(ruleset);
-    }
-
-    // Insert elites
-    for (u32 i = 0; i < POPULATION_ELITES; i++) {
-        memcpy(&rulesets[i][0], simulations[i].cpu_ruleset, ruleset_size * sizeof(u8));
-    }
-
-    // Crossover & mutate to fill up the rest of the population
-    for (u32 i = POPULATION_ELITES; i < POPULATION_SIZE; i++) {
-        u32 a_index = random_sample_u32(POPULATION_SELECTION);
-        u32 b_index = random_sample_u32(POPULATION_SELECTION);
-        u8* a = simulations[a_index].cpu_ruleset;
-        u8* b = simulations[b_index].cpu_ruleset;
-        u8* target = &rulesets[i][0];
-
-        ruleset_crossover(a, b, target);
-        ruleset_mutate(target);
-    }
-
-    // Store resulting rulesets to simulations and upload to the GPU
-    for (u32 i = 0; i < POPULATION_SIZE; i++) {
-        simulation_t* simulation = &simulations[i];
-
-        memcpy(simulation->cpu_ruleset, &rulesets[i][0], ruleset_size * sizeof(u8));
-        simulation_copy_ruleset_cpu_gpu(simulation);
-    }
-
-    // Wait for all rulesets to be copied
-    for (simulation_t& simulation : simulations) {
-        cudaStreamSynchronize(simulation.stream);
-    }
-}
-
 void seeker_init(int argc, char **argv, seeker_t* seeker) {
     temp_storage_init(&seeker->temp_storage);
 
@@ -946,7 +1170,7 @@ void seeker_init(int argc, char **argv, seeker_t* seeker) {
     }
 
     for (u32 i = 0; i < CROSSOVER_MUTATE_KERNELS_MAX; i++) {
-        CHECK_ERROR(cudaMalloc(&seeker->cpu_gpu_rngs[i], sizeof(curandStatePhilox4_32_10_t) * CROSSOVER_MUTATE_BLOCKS_MAX));
+        CHECK_ERROR(cudaMalloc(&seeker->cpu_gpu_rngs[i], sizeof(curandStatePhilox4_32_10_t) * CROSSOVER_MUTATE_RNGS_PER_KERNEL));
     }
 
     seeker->cpu_initial_grid = vector<u8>(GRID_AREA_WITH_PITCH, 0);
@@ -974,19 +1198,28 @@ void seeker_init(int argc, char **argv, seeker_t* seeker) {
         CHECK_ERROR(cudaMemcpy(&seeker->gpu_gpu_elite_rulesets[i], &elite_ruleset->gpu_ruleset, sizeof(u8*), cudaMemcpyHostToDevice));
     }
 
-    if (argc >= 3) {
-        printf("Loading initial grid: %s\n", argv[2]);
-        grid_load(argv[2], &seeker->cpu_initial_grid[0]);
-    } else {
-        printf("No initial grid provided, using a random initial grid.\n");
-        grid_init_random(&seeker->cpu_initial_grid[0]);
-    }
+    grid_load(argv[2], &seeker->cpu_initial_grid[0]);
 
     CHECK_ERROR(cudaMemcpy(seeker->gpu_initial_grid, &seeker->cpu_initial_grid[0], GRID_AREA_WITH_PITCH * sizeof(u8), cudaMemcpyHostToDevice));
 
     for (simulation_t& simulation : seeker->simulations) {
-        simulation_init(&simulation, false, 0);
+        simulation_init(&simulation, false, false, NULL, false, 0);
     }
+
+    cudaDeviceSynchronize();
+
+    if (global_argc >= 4) {
+        printf("Loading ruleset: %s\n", global_argv[3]);
+
+        for (simulation_t& simulation : seeker->simulations) {
+            simulation_ruleset_load(&simulation, global_argv[3]);
+        }
+    } else {
+        printf("No path to ruleset provided, using random rulesets.\n");
+        seeker_randomize_rulesets(seeker);
+    }
+
+    cudaDeviceSynchronize();
 
     seeker->population_index = 0;
 
@@ -1001,30 +1234,24 @@ void seeker_loop(seeker_t* seeker) {
         printf("Resetting grids...\n");
         for (simulation_t& simulation : seeker->simulations) {
             simulation_set_grid(&simulation, &seeker->cpu_initial_grid[0], seeker->gpu_initial_grid);
-            cudaStreamSynchronize(simulation.stream);
         }
+
+        cudaDeviceSynchronize();
         printf("Grids reset finished.\n");
 
         if (seeker->population_index > 0) {
             printf("Performing selection & mutation...\n");
-            /* population_selection_mutation(seeker->simulations); */
             seeker_crossover_mutation(seeker);
             printf("Selection & mutation finished.\n");
 
             cudaDeviceSynchronize();
         }
 
-        for (simulation_t& simulation : seeker->simulations) {
-            CHECK_ERROR(cudaStreamSynchronize(simulation.stream));
-        }
-
         printf("Simulating population #%u...\n", seeker->population_index);
         population_simulate(seeker->simulations);
         printf("Finished simulating population #%u.\n", seeker->population_index);
 
-        for (simulation_t& simulation : seeker->simulations) {
-            CHECK_ERROR(cudaStreamSynchronize(simulation.stream));
-        }
+        cudaDeviceSynchronize();
 
         printf("Ordering population...\n");
         seeker_population_order(seeker);
@@ -1056,12 +1283,25 @@ void seeker_output(seeker_t* seeker) {
         rulesets_to_save = POPULATION_SIZE;
     }
 
+    printf("Transferring rulesets from the GPU...\n");
+
+    for (u32 i = 0; i < rulesets_to_save; i++) {
+        simulation_t* simulation = &seeker->simulations[i];
+        u8* source_ruleset = seeker->cpu_gpu_mutation_rulesets[i];
+
+        ruleset_copy(simulation->cpu_ruleset, source_ruleset, cudaMemcpyDeviceToHost, simulation->stream);
+    }
+
+    cudaDeviceSynchronize();
+
+    printf("Saving rulesets...\n");
+
     for (u32 i = 0; i < rulesets_to_save; i++) {
         simulation_t* simulation = &seeker->simulations[i];
         char filename[1024];
 
         snprintf(filename, 1024, "ruleset_%04u.rsr", i);
-        simulation_ruleset_save(simulation, filename);
+        ruleset_save(filename, simulation->cpu_ruleset);
     }
 
     printf("%u rulesets saved.\n", rulesets_to_save);
@@ -1086,21 +1326,33 @@ int main_seek(int argc, char **argv) {
     return 0;
 }
 
-int main_simulate(int argc, char **argv) {
-    init_draw(argc, argv, handle_keys, idle_func);
+int main_show(int argc, char **argv) {
+    init_draw(argc, argv, window_close_callback, idle_func, false);
+    initialize(argc, argv);
+
+    return ui_loop();
+}
+
+int main_edit(int argc, char** argv) {
+    init_draw(argc, argv, window_close_callback, idle_func, true);
     initialize(argc, argv);
 
     return ui_loop();
 }
 
 int main(int argc, char **argv) {
-    bool seek = argc >= 2 && strcmp(argv[1], "seek") == 0;
-    bool simulate = argc >= 2 && strcmp(argv[1], "simulate") == 0;
+    global_argc = argc;
+    global_argv = argv;
 
-    if (!seek && !simulate) {
+    bool edit = argc >= 3 && strcmp(argv[1], "edit") == 0;
+    bool seek = argc >= 3 && strcmp(argv[1], "seek") == 0;
+    bool show = argc >= 3 && strcmp(argv[1], "show") == 0;
+
+    if (!edit && !seek && !show) {
         printf("Usage:\n");
-        printf("%s seek GRID.rsg -- performs search for interesting rulesets\n", argv[0]);
-        printf("%s simulate GRID.rsg RULESET.rsr -- performs visual simulation of an existing ruleset\n", argv[0]);
+        printf("%s edit GRID.rsg [-r]          -- a tool to edit initial grid states, use flag `-r` to randomize\n", argv[0]);
+        printf("%s seek GRID.rsg [RULESET.rsr] -- performs search for interesting rulesets\n", argv[0]);
+        printf("%s show GRID.rsg [RULESET.rsr] -- performs visual simulation of an existing ruleset\n", argv[0]);
         exit(0);
     }
 
@@ -1112,12 +1364,16 @@ int main(int argc, char **argv) {
         getchar();
     }
 
+    if (edit) {
+        return main_edit(argc, argv);
+    }
+
     if (seek) {
         return main_seek(argc, argv);
     }
 
-    if (simulate) {
-        return main_simulate(argc, argv);
+    if (show) {
+        return main_show(argc, argv);
     }
 
     return 0;

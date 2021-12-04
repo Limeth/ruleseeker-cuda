@@ -1,9 +1,7 @@
 #pragma once
 #include "util.cuh"
+#include <GLFW/glfw3.h>
 #include <GL/glew.h>
-#include <GL/gl.h>
-#include <GL/glu.h>
-#include <GL/freeglut.h>
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
 #include <vector>
@@ -14,6 +12,20 @@
 
 using namespace std;
 
+void (*global_idle_func)();
+void (*global_window_close_callback)(GLFWwindow*);
+
+GLFWwindow* window;
+
+int global_argc;
+char** global_argv;
+bool editing_mode = false;;
+bool randomize_grid = false;;
+u32 pressed_cell_index = (u32) -1;
+
+GLuint fbo;
+GLuint texture_color;
+GLuint texture_cells;
 GLuint vao;
 GLuint vbo;
 GLuint shader_vertex;
@@ -31,8 +43,6 @@ simulation_t preview_simulation;
 
 u32 frame_index = 0;
 u32vec2 window_size = make_u32vec2(WINDOW_WIDTH, WINDOW_HEIGHT);
-
-
 
 #ifdef EXPORT_FRAMES
 __host__ void export_frame() {
@@ -66,10 +76,15 @@ __host__ void export_frame() {
 }
 #endif
 
-// vykresleni bitmapy v OpenGL
 __host__ void draw_image() {
-    glClearColor(0.0, 0.0, 0.0, 0.0);
-    glClear(GL_COLOR_BUFFER_BIT);
+    GLenum bufs[2] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
+    glNamedFramebufferDrawBuffers(fbo, 2, bufs);
+
+    u8 clear_color[4] = { 0, 0, 0, 0 };
+    glClearTexImage(texture_color, 0, GL_RGBA, GL_BYTE, clear_color);
+
+    i32 clear_cell[1] = { -1 };
+    glClearTexImage(texture_cells, 0, GL_RED_INTEGER, GL_UNSIGNED_INT, clear_cell);
 
     // Draw
     {
@@ -96,21 +111,31 @@ __host__ void draw_image() {
             glDrawArraysInstancedBaseInstance(GL_TRIANGLE_FAN, 0, CELL_VERTICES, GRID_WIDTH, y * GRID_PITCH);
         }
     }
+}
+
+// vykresleni bitmapy v OpenGL
+__host__ void display_func() {
+    draw_image();
 
 #ifdef EXPORT_FRAMES
-    export_frame();
+    if (!editing_mode) {
+        export_frame();
+    }
 #endif
 
-    glutSwapBuffers();
+    glBlitNamedFramebuffer(fbo, 0, 0, 0, window_size.x, window_size.y, 0, 0, window_size.x, window_size.y, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glfwSwapBuffers(window);
 
 #ifdef SLEEP_MS
     msleep(SLEEP_MS);
 #endif
 
 #ifdef EXIT_AFTER_FRAMES
-    if (frame_index + 1 >= EXIT_AFTER_FRAMES) {
-        printf("Reached max number of frames, exiting.\n");
-        exit(0);
+    if (!editing_mode) {
+        if (frame_index + 1 >= EXIT_AFTER_FRAMES) {
+            printf("Reached max number of frames, exiting.\n");
+            exit(0);
+        }
     }
 #endif
 
@@ -153,8 +178,6 @@ __host__ u32 create_shader(u8* shader_code, i32 shader_len, GLenum shader_type) 
 
 // Create an OpenGL buffer accessible from CUDA
 __host__ void create_cuda_vbo(GLuint *vbo, struct cudaGraphicsResource **vbo_res, u32 size, u32 vbo_res_flags) {
-    /* assert(vbo); */
-
     // create buffer object
     glGenBuffers(1, vbo);
     glBindBuffer(GL_ARRAY_BUFFER, *vbo);
@@ -179,39 +202,138 @@ __host__ void delete_cuda_vbo(GLuint *vbo, struct cudaGraphicsResource *vbo_res)
     *vbo = 0;
 }
 
-void reshape_func(int width, int height) {
+void update_window_size_dependent_resources(int width, int height) {
     printf("Window size changed: %d, %d\n", width, height);
     window_size.x = width;
     window_size.y = height;
     glViewport(0, 0, width, height);
     glUniform2ui(uniform_window_resolution, width, height);
+
+    u32 texture_cells_data[width][height];
+
+    glDeleteTextures(1, &texture_color);
+    glGenTextures(1, &texture_color);
+    glBindTexture(GL_TEXTURE_2D, texture_color);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture_color, 0);
+
+    glDeleteTextures(1, &texture_cells);
+    glGenTextures(1, &texture_cells);
+    glBindTexture(GL_TEXTURE_2D, texture_cells);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_R32UI, width, height, 0, GL_RED_INTEGER, GL_UNSIGNED_INT, texture_cells_data);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, texture_cells, 0);
+}
+
+void window_size_callback(GLFWwindow* window, int width, int height) {
+    update_window_size_dependent_resources(width, height);
+}
+
+void handle_mouse(GLFWwindow* window, int button, int action, int mods) {
+    if (!editing_mode) {
+        return;
+    }
+
+    double mouse_x, mouse_y;
+
+    glfwGetCursorPos(window, &mouse_x, &mouse_y);
+
+    if (button == GLFW_MOUSE_BUTTON_LEFT || button == GLFW_MOUSE_BUTTON_RIGHT) {
+        if (action == GLFW_PRESS) {
+            i32 pixel_x = mouse_x;
+            i32 pixel_y = window_size.y - 1 - ((i32) mouse_y);
+
+            glReadBuffer(GL_COLOR_ATTACHMENT1);
+            glReadPixels(pixel_x, pixel_y, 1, 1, GL_RED_INTEGER, GL_UNSIGNED_INT, &pressed_cell_index);
+            glReadBuffer(GL_COLOR_ATTACHMENT0);
+        } else if (action == GLFW_RELEASE) {
+            if (pressed_cell_index != (u32) -1) {
+                u8 state = preview_simulation.cpu_grid_states_1[pressed_cell_index];
+
+                if (button == GLFW_MOUSE_BUTTON_LEFT) {
+                    state = (state + 1) % CELL_STATES;
+                } else {
+                    state = (state + CELL_STATES - 1) % CELL_STATES;
+                }
+
+                preview_simulation.cpu_grid_states_1[pressed_cell_index] = state;
+
+                simulation_copy_grid_cpu_gpu(&preview_simulation);
+            }
+
+            pressed_cell_index = (u32) -1;
+        }
+    }
+}
+
+void handle_keys(GLFWwindow* window, int key, int scancode, int action, int mods) {
+    if (key == GLFW_KEY_ESCAPE && action == GLFW_RELEASE) {
+        glfwSetWindowShouldClose(window, true);
+        global_window_close_callback(window);
+    }
 }
 
 __host__ void init_draw(
         int argc,
         char **argv,
-        void (handle_keys)(unsigned char key, int x, int y),
-        void (idle_func)()
+        void (window_close_callback)(GLFWwindow* window),
+        void (param_idle_func)(),
+        bool edit
 ) {
-    glutInit(&argc, argv);
+    editing_mode = edit;
 
-    u32 display_mode = GLUT_DOUBLE | GLUT_RGBA;
-
-    if (USE_MULTISAMPLING) {
-        display_mode |= GLUT_MULTISAMPLE;
-        glutSetOption(GLUT_MULTISAMPLE, MULTISAMPLING_SAMPLES);
+    if (editing_mode) {
+        for (int i = 3; i < argc; i++) {
+            if (strcmp(argv[i], "-r") == 0) {
+                randomize_grid = true;
+            }
+        }
     }
 
-    glutInitWindowSize(WINDOW_WIDTH, WINDOW_HEIGHT);
-    glutInitDisplayMode(display_mode);
-    glutCreateWindow("Life Game");
-    glutDisplayFunc(draw_image);
-    glutKeyboardFunc(handle_keys);
-    glutIdleFunc(idle_func);
-    glutReshapeFunc(reshape_func);
+    if (!glfwInit()) {
+        exit(1);
+    }
 
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+    glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_TRUE);
+    /* glfwWindowHint(GLFW_SRGB_CAPABLE, GLFW_TRUE); */
+
+    if (USE_MULTISAMPLING) {
+        glfwWindowHint(GLFW_SAMPLES, MULTISAMPLING_SAMPLES);
+    }
+
+    window = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "ruleseeker-cuda", NULL, NULL);
+
+    if (!window) {
+        glfwTerminate();
+        exit(1);
+    }
+
+    glfwSetWindowSizeCallback(window, window_size_callback);
+    glfwSetKeyCallback(window, handle_keys);
+    glfwSetMouseButtonCallback(window, handle_mouse);
+    glfwSetWindowCloseCallback(window, window_close_callback);
+    glfwMakeContextCurrent(window);
+
+    global_idle_func = param_idle_func;
+    global_window_close_callback = window_close_callback;
+
+    glewExperimental = GL_TRUE;
     glewInit();
 
+    glEnable(GL_DEBUG_OUTPUT);
+    glDebugMessageCallback(gl_debug_message_callback, NULL);
+    /* glEnable(GL_FRAMEBUFFER_SRGB); */
     glDisable(GL_DEPTH_TEST);
 
     if (USE_MULTISAMPLING) {
@@ -220,6 +342,8 @@ __host__ void init_draw(
 
     glGenVertexArrays(1, &vao);
     glGenBuffers(1, &vbo);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
 
     preview_simulation.gpu_states.type = STATES_TYPE_OPENGL;
 
@@ -252,11 +376,33 @@ __host__ void init_draw(
 }
 
 __host__ void finalize_draw() {
+    if (editing_mode) {
+        printf("Saving grid to: %s\n", global_argv[2]);
+        simulation_grid_save(&preview_simulation, global_argv[2]);
+    }
 }
 
 
 int ui_loop() {
-    glutMainLoop();
+    // Manually update window size dependent resources as the GLFW resize callback is not called on launch.
+    update_window_size_dependent_resources(WINDOW_WIDTH, WINDOW_HEIGHT);
+
+    bool first = true;
+
+    while (!glfwWindowShouldClose(window)) {
+        if (first) {
+            first = false;
+        } else {
+            global_idle_func();
+        }
+
+        display_func();
+
+        /* Poll for and process events */
+        glfwPollEvents();
+    }
+
+    glfwTerminate();
 
     return 0;
 }

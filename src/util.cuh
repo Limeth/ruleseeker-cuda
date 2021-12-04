@@ -133,6 +133,102 @@ static inline __host__ __device__ void check_error(cudaError_t error, const char
         }                                                                  \
     } while(false);
 
+// Callback function for printing debug statements
+void APIENTRY gl_debug_message_callback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar *msg, const void *data) {
+    const char* _source;
+    const char* _type;
+    const char* _severity;
+
+    switch (source) {
+        case GL_DEBUG_SOURCE_API:
+        _source = "API";
+        break;
+
+        case GL_DEBUG_SOURCE_WINDOW_SYSTEM:
+        _source = "WINDOW SYSTEM";
+        break;
+
+        case GL_DEBUG_SOURCE_SHADER_COMPILER:
+        _source = "SHADER COMPILER";
+        break;
+
+        case GL_DEBUG_SOURCE_THIRD_PARTY:
+        _source = "THIRD PARTY";
+        break;
+
+        case GL_DEBUG_SOURCE_APPLICATION:
+        _source = "APPLICATION";
+        break;
+
+        case GL_DEBUG_SOURCE_OTHER:
+        _source = "UNKNOWN";
+        break;
+
+        default:
+        _source = "UNKNOWN";
+        break;
+    }
+
+    switch (type) {
+        case GL_DEBUG_TYPE_ERROR:
+        _type = "ERROR";
+        break;
+
+        case GL_DEBUG_TYPE_DEPRECATED_BEHAVIOR:
+        _type = "DEPRECATED BEHAVIOR";
+        break;
+
+        case GL_DEBUG_TYPE_UNDEFINED_BEHAVIOR:
+        _type = "UDEFINED BEHAVIOR";
+        break;
+
+        case GL_DEBUG_TYPE_PORTABILITY:
+        _type = "PORTABILITY";
+        break;
+
+        case GL_DEBUG_TYPE_PERFORMANCE:
+        _type = "PERFORMANCE";
+        break;
+
+        case GL_DEBUG_TYPE_OTHER:
+        _type = "OTHER";
+        break;
+
+        case GL_DEBUG_TYPE_MARKER:
+        _type = "MARKER";
+        break;
+
+        default:
+        _type = "UNKNOWN";
+        break;
+    }
+
+    switch (severity) {
+        case GL_DEBUG_SEVERITY_HIGH:
+        _severity = "HIGH";
+        break;
+
+        case GL_DEBUG_SEVERITY_MEDIUM:
+        _severity = "MEDIUM";
+        break;
+
+        case GL_DEBUG_SEVERITY_LOW:
+        _severity = "LOW";
+        break;
+
+        case GL_DEBUG_SEVERITY_NOTIFICATION:
+        _severity = "NOTIFICATION";
+        break;
+
+        default:
+        _severity = "UNKNOWN";
+        break;
+    }
+
+    printf("\x1B[1;30m[OpenGL] %d: %s of %s severity, raised from %s: %s\x1B[0m\n",
+            id, _type, _severity, _source, msg);
+}
+
 int msleep(long msec) {
     struct timespec ts;
     int res;
@@ -186,6 +282,10 @@ bool file_write(char* filename, void* buffer, u32 buffer_len) {
 bool file_load(char* filename, u8* buffer, u32 buffer_len) {
     FILE* file = fopen(filename, "rb");
 
+    if (!file) {
+        return false;
+    }
+
     if (buffer_len != fread(buffer, sizeof(u8), buffer_len, file)) {
         return false;
     }
@@ -197,15 +297,8 @@ bool file_load(char* filename, u8* buffer, u32 buffer_len) {
 // Writes a 2d buffer with pitch to a file
 bool file_write_2d_pitch(char* filename, u8* buffer, u32 width, u32 height, u32 pitch) {
     FILE* file = fopen(filename, "wb");
-    u32 offset = pitch - width;
 
     for (i32 y = 0; y < height; y++) {
-        if (y > 0) {
-            if (!fseek(file, offset, SEEK_CUR)) {
-                return false;
-            }
-        }
-
         if (width != fwrite(buffer, sizeof(u8), width, file)) {
             return false;
         }
@@ -220,15 +313,12 @@ bool file_write_2d_pitch(char* filename, u8* buffer, u32 width, u32 height, u32 
 // Writes a 2d buffer with pitch to a file
 bool file_load_2d_pitch(char* filename, u8* buffer, u32 width, u32 height, u32 pitch) {
     FILE* file = fopen(filename, "rb");
-    u32 offset = pitch - width;
+
+    if (!file) {
+        return false;
+    }
 
     for (i32 y = 0; y < height; y++) {
-        if (y > 0) {
-            if (!fseek(file, offset, SEEK_CUR)) {
-                return false;
-            }
-        }
-
         if (width != fread(buffer, sizeof(u8), width, file)) {
             return false;
         }
@@ -272,6 +362,14 @@ f32 random_sample_f32_normalized() {
 
 f32 random_sample_f32(f32 upper_bound_inclusive) {
     return random_sample_f32_normalized() * upper_bound_inclusive;
+}
+
+f64 random_sample_f64_normalized() {
+    return ((f64) random_sample_u32(RAND_MAX) / (f64) (RAND_MAX - 1));
+}
+
+f64 random_sample_f64(f64 upper_bound_inclusive) {
+    return random_sample_f64_normalized() * upper_bound_inclusive;
 }
 
 // Temporary storage for CUB-related routines
