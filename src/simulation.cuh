@@ -80,6 +80,51 @@ __inline__ __host__ __device__ int get_ruleset_size() {
 #endif
 }
 
+// Returns the required number of iterations to accumulate cumulative error.
+int get_fitness_iterations() {
+    int iterations[] = { FITNESS_FN_TARGET_ITERATIONS };
+    int len = sizeof(iterations) / sizeof(int);
+
+    return len;
+}
+
+int get_fitness_eval_to() {
+    int iterations[] = { FITNESS_FN_TARGET_ITERATIONS };
+    int len = sizeof(iterations) / sizeof(int);
+    int max = 0;
+
+    for (int i = 0; i < len; i++) {
+        if (iterations[i] > max) {
+            max = iterations[i];
+        }
+    }
+
+    return max + 1;
+}
+
+// Returns the target value of the fitness function.
+float get_fitness_fn_target(int iteration) {
+    int iterations[] = { FITNESS_FN_TARGET_ITERATIONS };
+    float values[] = { FITNESS_FN_TARGET_VALUES };
+    int len = sizeof(iterations) / sizeof(int);
+
+    for (int i = 0; i < len; i++) {
+        if (iteration == iterations[i]) {
+            return values[i];
+        }
+    }
+
+    return 0.0 / 0.0; // NaN
+}
+
+// Whether or not the sum of fit cells should be performed for the given iteration.
+bool get_fitness_fn_reduce(int iteration) {
+    float target = get_fitness_fn_target(iteration);
+    bool is_nan = target != target;
+
+    return !is_nan;
+}
+
 void grid_init_random(u8* grid) {
     for (i32 y = 0; y < GRID_HEIGHT; y++) {
         for (i32 x = 0; x < GRID_WIDTH; x++) {
@@ -366,20 +411,20 @@ void simulation_grid_load(simulation_t* simulation, char* filename) {
     simulation_gpu_states_unmap(simulation);
 }
 
-void simulation_compute_fitness(simulation_t* simulation) {
+void simulation_compute_fitness(simulation_t* simulation, u32 iteration) {
     f32 proportion_actual = ((f32) simulation->cpu_fit_cells) / ((f32) GRID_AREA);
     f32 fitness;
 
     // See https://www.desmos.com/calculator/b8daos2dqt
     f32 x = proportion_actual; // aliases
-    const f32 p = FITNESS_FN_TARGET;
+    f32 p = get_fitness_fn_target(iteration);
 
     if (FITNESS_FN_TYPE == FITNESS_FN_TYPE_ABS) {
         fitness = 1.0f - abs(x - p);
     } else if (FITNESS_FN_TYPE == FITNESS_FN_TYPE_LINEAR) {
-        if (FITNESS_FN_TARGET == 0.0f) {
+        if (p == 0.0f) {
             fitness = (1.0f - x) / (1.0f - p);
-        } else if (FITNESS_FN_TARGET == 1.0f) {
+        } else if (p == 1.0f) {
             fitness = x / p;
         } else {
             fitness = min(x / p, (1.0f - x) / (1.0f - p));
@@ -406,7 +451,7 @@ void simulation_cumulative_error_add(simulation_t* simulation) {
 }
 
 void simulation_cumulative_error_normalize(simulation_t* simulation) {
-    simulation->cumulative_error /= (f32) FITNESS_EVAL_LEN;
+    simulation->cumulative_error /= (f32) get_fitness_iterations();
 }
 
 void simulation_temp_storage_ensure(simulation_t* simulation, size_t size) {

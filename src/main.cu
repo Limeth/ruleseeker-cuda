@@ -649,8 +649,10 @@ void population_simulate(array<simulation_t, POPULATION_SIZE>& simulations) {
         simulation_cumulative_error_reset(&simulation);
     }
 
-    for (u32 iteration = 0; iteration < FITNESS_EVAL_TO; iteration++) {
-        bool reduce_fit_cells = iteration >= FITNESS_EVAL_FROM;
+    u32 fitness_eval_to = get_fitness_eval_to();
+
+    for (u32 iteration = 0; iteration < fitness_eval_to; iteration++) {
+        bool reduce_fit_cells = get_fitness_fn_reduce(iteration);
 
         for (simulation_t& simulation : simulations) {
             simulate_step(&simulation, true, reduce_fit_cells);
@@ -672,7 +674,7 @@ void population_simulate(array<simulation_t, POPULATION_SIZE>& simulations) {
 
             // Cumulate error
             for (simulation_t& simulation : simulations) {
-                simulation_compute_fitness(&simulation);
+                simulation_compute_fitness(&simulation, iteration);
                 simulation_cumulative_error_add(&simulation);
             }
 

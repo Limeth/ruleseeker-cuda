@@ -41,7 +41,7 @@
 // [enum] which cells are considered in the neighbourhood (vertex for Conway's GoL)
 #define CELL_NEIGHBOURHOOD_TYPE CELL_NEIGHBOURHOOD_TYPE_EDGE
 // [uchar] number of states a cell can become (2 for Conway's GoL)
-#define CELL_STATES 4
+#define CELL_STATES 6
 
 // Conway's GoL:
 /* #define GRID_GEOMETRY GRID_GEOMETRY_SQUARE */
@@ -50,11 +50,11 @@
 
 // # Seeking parameters (genetic algorithm)
 // Number of cellular automata to simulate simultaneously.
-#define POPULATION_SIZE 256
+#define POPULATION_SIZE 64
 // Number of top candidates to keep for the next population, without any adjustments.
-#define POPULATION_ELITES 4
+#define POPULATION_ELITES 2
 // Number of top candidates to use for crossover and mutation (including elites).
-#define POPULATION_SELECTION 32
+#define POPULATION_SELECTION 16
 // The chance that a single rule of a ruleset changes during mutation.
 #define MUTATION_CHANCE 0.01
 // Whether to make mutation chance dependent on rank -- lower mutation chance for high fitness candidates.
@@ -66,10 +66,8 @@
 /* #define MUTATION_METHOD MUTATION_METHOD_UNIFORM */
 
 // ## Fitness function
-// [uint] the index of the iteration to start cumulating the fitness error from
-#define FITNESS_EVAL_FROM 100
-// [uint] the number of iterations to cumulate the fitness error for
-#define FITNESS_EVAL_LEN 30
+#define FITNESS_FN_TARGET_ITERATIONS 5, 6, 40, 100, 101, 102
+#define FITNESS_FN_TARGET_VALUES 0.95, 0.95, 0.05, 0.95, 0.95, 0.95
 
 // Proportion
 // [enum] which cell evaluation method to use (decide whether a given cell is "fit", or not)
@@ -98,11 +96,11 @@
 // [uint] number of milliseconds to wait between iterations (overriden by FRAMERATE)
 /* #define SLEEP_MS 5000 */
 // [uint] initial window width
-#define WINDOW_WIDTH 800
+#define WINDOW_WIDTH 1000
 // [uint] initial window height
-#define WINDOW_HEIGHT 800
+#define WINDOW_HEIGHT 1000
 // [uint] max number of frames exported as PNG
-#define EXPORT_FRAMES (FITNESS_EVAL_FROM + FITNESS_EVAL_LEN)
+#define EXPORT_FRAMES 100
 #define PROMPT_TO_START false
 // Close the application after this many frames. Useful for profiling. Uncomment to disable.
 /* #define EXIT_AFTER_FRAMES 3 */
