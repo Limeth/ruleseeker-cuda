@@ -101,16 +101,18 @@ void main() {
     out_cell_state_current = in_cell_state_current;
     out_cell_state_previous = in_cell_state_previous;
 
-#if CELL_STATES == 2
-    vec3 color = vec3(
-        float(!bool(in_cell_state_current) &&  bool(in_cell_state_previous)),
-        float( bool(in_cell_state_current) && !bool(in_cell_state_previous)),
-        float( bool(in_cell_state_current) &&  bool(in_cell_state_previous))
-    );
-#else
-    vec3 color = hsv2rgb(vec3(float(in_cell_state_current - 1) / float(CELL_STATES - 1), 1.0, 1.0));
-    color *= float(in_cell_state_current != 0);
-#endif
+    vec3 color;
+
+    if (CELL_STATES == 2 && MULTICOLOR_TWO_STATE) {
+        color = vec3(
+            float(!bool(in_cell_state_current) &&  bool(in_cell_state_previous)),
+            float( bool(in_cell_state_current) && !bool(in_cell_state_previous)),
+            float( bool(in_cell_state_current) &&  bool(in_cell_state_previous))
+        );
+    } else {
+        color = hsv2rgb(vec3(float(in_cell_state_current - 1) / float(CELL_STATES - 1), 1.0, 1.0));
+        color *= float(in_cell_state_current != 0);
+    }
 
     out_color = color;
 }

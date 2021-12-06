@@ -41,7 +41,7 @@
 // [enum] which cells are considered in the neighbourhood (vertex for Conway's GoL)
 #define CELL_NEIGHBOURHOOD_TYPE CELL_NEIGHBOURHOOD_TYPE_EDGE
 // [uchar] number of states a cell can become (2 for Conway's GoL)
-#define CELL_STATES 6
+#define CELL_STATES 2
 
 // Conway's GoL:
 /* #define GRID_GEOMETRY GRID_GEOMETRY_SQUARE */
@@ -56,7 +56,7 @@
 // Number of top candidates to use for crossover and mutation (including elites).
 #define POPULATION_SELECTION 16
 // The chance that a single rule of a ruleset changes during mutation.
-#define MUTATION_CHANCE 0.01
+#define MUTATION_CHANCE 0.5
 // Whether to make mutation chance dependent on rank -- lower mutation chance for high fitness candidates.
 #define MUTATION_CHANCE_ADAPTIVE_BY_RANK true
 
@@ -66,12 +66,12 @@
 /* #define MUTATION_METHOD MUTATION_METHOD_UNIFORM */
 
 // ## Fitness function
-#define FITNESS_FN_TARGET_ITERATIONS 5, 6, 40, 100, 101, 102
-#define FITNESS_FN_TARGET_VALUES 0.95, 0.95, 0.05, 0.95, 0.95, 0.95
+#define FITNESS_FN_TARGET_ITERATIONS 50, 100, 150, 200, 201, 202, 203
+#define FITNESS_FN_TARGET_VALUES 0.55, 0.05, 0.55, 0.0, 0.0, 0.0, 0.0
 
 // Proportion
 // [enum] which cell evaluation method to use (decide whether a given cell is "fit", or not)
-#define FITNESS_EVAL FITNESS_EVAL_STATE
+#define FITNESS_EVAL FITNESS_EVAL_UPDATE
 // [uint] which state to count the proportion of
 #define FITNESS_EVAL_STATE_INDEX 0
 // [enum] which way to evaluate the fitness function
@@ -91,6 +91,8 @@
 #define USE_MULTISAMPLING true
 // [uint] number of samples per pixel to use when multisampling is enabled
 #define MULTISAMPLING_SAMPLES 16
+// [bool] whether to display 2-state simulations using more colors, based on the cell action
+#define MULTICOLOR_TWO_STATE false
 // [float/uint] number of iterations per second
 #define FRAMERATE 8
 // [uint] number of milliseconds to wait between iterations (overriden by FRAMERATE)
