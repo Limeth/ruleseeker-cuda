@@ -8,3 +8,5 @@ shaders.cuh
 **/*.nvvp
 **/*.rsr
 **/*.rsg
+html
+latex

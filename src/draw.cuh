@@ -1,4 +1,10 @@
 #pragma once
+
+/**
+ * @file
+ * @brief Most functionality regarding rendering resides here.
+ */
+
 #include "util.cuh"
 #include <GLFW/glfw3.h>
 #include <GL/glew.h>
@@ -12,39 +18,61 @@
 
 using namespace std;
 
-void (*global_idle_func)();
-void (*global_window_close_callback)(GLFWwindow*);
-
-GLFWwindow* window;
-
+/*
+ * Global state.
+ * I am aware that this is not the best programming practice, but I had to make
+ * compromises in order to meet the deadlines.
+ */
 int global_argc;
 char** global_argv;
-bool editing_mode = false;;
-bool randomize_grid = false;;
+/// Pointer to the idle func used. Called on every frame.
+void (*global_idle_func)();
+/// Pointer to the window close callback.
+void (*global_window_close_callback)(GLFWwindow*);
+/// Pointer to the window used for the `show` and `edit` procedures.
+GLFWwindow* window;
+
+/// Whether editing mode is enabled.
+bool editing_mode = false;
+/// Whether grid randomization is requested using a flag.
+bool randomize_grid = false;
+/// Which cell the mouse button was pressed down on.
 u32 pressed_cell_index = (u32) -1;
 
+/**
+ * @name OpenGL state
+ * @{
+ * Used during `show` and `edit` procedures, initialized by `init_draw`.
+ */
+/// Framebuffer Object.
 GLuint fbo;
+/// Color texture displayed to the screen.
 GLuint texture_color;
+/// Cell index texture used to retrieve which cell was clicked on using the mouse.
 GLuint texture_cells;
+/// Vertex Array Object
 GLuint vao;
+/// Vertex Buffer Object
 GLuint vbo;
+/// Vertex Shader
 GLuint shader_vertex;
+/// Fragment Shader
 GLuint shader_fragment;
+/// Shader Program with the `shader_vertex` and `shader_fragment` shaders.
 GLuint shader_program;
+/// The uniform corresponding to the window resolution. This is so that we can preserve the aspect ratio of the displayed grid.
 GLuint uniform_window_resolution;
+///@}
 
+/// The simulation that is shown in the window.
 simulation_t preview_simulation;
-
-/* GLuint gpu_vbo_grid_states_1; */
-/* GLuint gpu_vbo_grid_states_2; */
-
-/* struct cudaGraphicsResource* gpu_cuda_grid_states_1 = NULL; */
-/* struct cudaGraphicsResource* gpu_cuda_grid_states_2 = NULL; */
-
+/// The current index of the frame.
 u32 frame_index = 0;
+/// The current window size.
 u32vec2 window_size = make_u32vec2(WINDOW_WIDTH, WINDOW_HEIGHT);
 
 #ifdef EXPORT_FRAMES
+/// Exports a single frame as a PNG.
 __host__ void export_frame() {
     if (frame_index >= EXPORT_FRAMES) {
         return;
@@ -76,6 +104,7 @@ __host__ void export_frame() {
 }
 #endif
 
+/// Renders the current simulation state to the framebuffer.
 __host__ void draw_image() {
     GLenum bufs[2] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
     glNamedFramebufferDrawBuffers(fbo, 2, bufs);
@@ -113,7 +142,7 @@ __host__ void draw_image() {
     }
 }
 
-// vykresleni bitmapy v OpenGL
+/// Renders the current simulation to the window. Called every frame.
 __host__ void display_func() {
     draw_image();
 
@@ -142,6 +171,7 @@ __host__ void display_func() {
     frame_index += 1;
 }
 
+/// Compiles a shader
 __host__ u32 create_shader(u8* shader_code, i32 shader_len, GLenum shader_type) {
     u32 shader = glCreateShader(shader_type);
     u8* config_h_ptr = config_h;
@@ -176,7 +206,7 @@ __host__ u32 create_shader(u8* shader_code, i32 shader_len, GLenum shader_type) 
     return shader;
 }
 
-// Create an OpenGL buffer accessible from CUDA
+/// Create an OpenGL buffer accessible from CUDA.
 __host__ void create_cuda_vbo(GLuint *vbo, struct cudaGraphicsResource **vbo_res, u32 size, u32 vbo_res_flags) {
     // create buffer object
     glGenBuffers(1, vbo);
@@ -191,7 +221,7 @@ __host__ void create_cuda_vbo(GLuint *vbo, struct cudaGraphicsResource **vbo_res
     CHECK_ERROR(cudaGraphicsGLRegisterBuffer(vbo_res, *vbo, vbo_res_flags));
 }
 
-// Delete an OpenGL buffer accessible from CUDA
+/// Delete an OpenGL buffer accessible from CUDA.
 __host__ void delete_cuda_vbo(GLuint *vbo, struct cudaGraphicsResource *vbo_res) {
     // unregister this buffer object with CUDA
     CHECK_ERROR(cudaGraphicsUnregisterResource(vbo_res));
@@ -202,6 +232,7 @@ __host__ void delete_cuda_vbo(GLuint *vbo, struct cudaGraphicsResource *vbo_res)
     *vbo = 0;
 }
 
+/// Updates resources that are dependent on the window size.
 void update_window_size_dependent_resources(int width, int height) {
     printf("Window size changed: %d, %d\n", width, height);
     window_size.x = width;
@@ -232,10 +263,12 @@ void update_window_size_dependent_resources(int width, int height) {
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, texture_cells, 0);
 }
 
+/// Called after whenever the window has been resized.
 void window_size_callback(GLFWwindow* window, int width, int height) {
     update_window_size_dependent_resources(width, height);
 }
 
+/// Handle mouse button press/release events.
 void handle_mouse(GLFWwindow* window, int button, int action, int mods) {
     if (!editing_mode) {
         return;
@@ -273,6 +306,7 @@ void handle_mouse(GLFWwindow* window, int button, int action, int mods) {
     }
 }
 
+/// Handle keyboard press/release events.
 void handle_keys(GLFWwindow* window, int key, int scancode, int action, int mods) {
     if (key == GLFW_KEY_ESCAPE && action == GLFW_RELEASE) {
         glfwSetWindowShouldClose(window, true);
@@ -280,6 +314,7 @@ void handle_keys(GLFWwindow* window, int key, int scancode, int action, int mods
     }
 }
 
+/// Initialize the application for drawing to a window.
 __host__ void init_draw(
         int argc,
         char **argv,
@@ -375,6 +410,7 @@ __host__ void init_draw(
     glDeleteShader(shader_fragment);
 }
 
+/// Finalize the application when drawing to a window.
 __host__ void finalize_draw() {
     if (editing_mode) {
         printf("Saving grid to: %s\n", global_argv[2]);
@@ -382,7 +418,7 @@ __host__ void finalize_draw() {
     }
 }
 
-
+/// Main draw loop of the application.
 int ui_loop() {
     // Manually update window size dependent resources as the GLFW resize callback is not called on launch.
     update_window_size_dependent_resources(WINDOW_WIDTH, WINDOW_HEIGHT);

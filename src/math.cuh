@@ -1,12 +1,20 @@
 #pragma once
+
+/**
+ * @file
+ * @brief Mathematical operations, such as the binomial coefficient and related functions.
+ */
+
 #include <stdio.h>
 #include <iostream>
 #include <cassert>
 
+/// binomial coefficient / nCk
 __host__ __device__ u64 binomial(u32 n, u32 k) {
     /* if (k > n - k) { */
     /*     k = n - k; */
     /* } */
+
     k = min(k, n - k);
     u64 result = 1;
 
@@ -17,50 +25,10 @@ __host__ __device__ u64 binomial(u32 n, u32 k) {
     return result;
 }
 
+/// Number of combinations with repetition
 __host__ __device__ u64 combinations_with_repetitions(u32 k, u32 n) {
     return binomial(k + n - 1, k);
 }
-
-__host__ __device__ void combination_with_repetition_inner(u32 k, u32 n, u32 index, u32 state_count_len, u8* state_count) {
-    i32 found_state = -1;
-    u32 index_offset = 0;
-    u32 total_state_combos = 0;
-
-    for (int state = 0; state < n; state += 1) {
-        int stateCombos = (int) combinations_with_repetitions(k - 1, n - state);
-        index_offset = total_state_combos;
-        total_state_combos += stateCombos;
-
-        if (index < total_state_combos) {
-            found_state = state;
-            break;
-        }
-    }
-
-    assert(found_state >= 0); // Combination index out of bounds.
-
-    state_count[found_state + state_count_len - n] += 1;
-
-    if (k > 1) {
-        combination_with_repetition_inner(k - 1, n - found_state, index - index_offset, state_count_len, state_count);
-    }
-}
-
-/**
- * @param k Number of selected items
- * @param n Number of different states to select from
- * @param index Index of the combination with repetition to return
- * @return The combination at the given {@param index} represented by the count of each state at its index in the returned array
- */
-/* int[] combinationWithRepetition(int k, int n, int index) { */
-/*     assertm(k > 0, "The combination class (k) must be positive."); */
-/*     assertm(n > 0, "The number of states (n) must be positive."); */
-/*     int[] state_count = new int[n]; */
-
-/*     combination_with_repetition_inner(k, n, index, state_count); */
-
-/*     return state_count; */
-/* } */
 
 __host__ __device__ u32 combination_index_with_repetition_inner(u32 state_count_len, u8* state_count, u32 k) {
     u32 n = state_count_len;
@@ -94,6 +62,14 @@ __host__ __device__ u32 combination_index_with_repetition(u32 state_count_len, u
     return combination_index_with_repetition_inner(state_count_len, state_count, k);
 }
 
+/**
+ *  Computes the index of a rule within a ruleset.
+ *
+ *  @param cell_neighbourhood_combinations: number of total possible combinations of states in the neighbourhood (precomputed)
+ *  @param state: the current cell state
+ *  @param state_count_len: The number of possible cell states.
+ *  @param state_count: The number of cells with given state, for each state.
+ */
 __inline__ __host__ __device__ u32 get_rule_index(
         u32 cell_neighbourhood_combinations,
         u8 state,
@@ -103,18 +79,22 @@ __inline__ __host__ __device__ u32 get_rule_index(
     return ((u32) state) * cell_neighbourhood_combinations + combination_index_with_repetition(state_count_len, state_count);
 }
 
+/// Compute `cell_neighbourhood_combinations` for use in `get_rule_index`.
 __host__ __device__ int compute_neighbouring_state_combinations(int neighbourhood_size, int states) {
     return combinations_with_repetitions(neighbourhood_size, states);
 }
 
+/// Computes the total number of rules in a ruleset.
 __host__ __device__ int compute_ruleset_size(int neighbourhood_size, int states) {
     return states * compute_neighbouring_state_combinations(neighbourhood_size, states);
 }
 
+/// Modulus operation (as opposed to a remainder).
 __inline__ __host__ __device__ int mod(int x, int n) {
     return (x % n + n) % n;
 }
 
+/// Integer power operation.
 __inline__ __host__ __device__ int powi(int x, int p) {
     int i = 1;
 
@@ -125,6 +105,7 @@ __inline__ __host__ __device__ int powi(int x, int p) {
     return i;
 }
 
+/// Long integer power operation.
 __inline__ __host__ __device__ long int powli(long int x, long int p) {
     long int i = 1;
 

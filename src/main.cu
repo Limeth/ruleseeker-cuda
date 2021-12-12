@@ -1,3 +1,8 @@
+/**
+ * @file
+ * @brief Entry point of the program and kernels.
+ */
+
 #include <algorithm>
 #include <boost/math/distributions/fwd.hpp>
 #include <signal.h>
@@ -23,72 +28,69 @@
 using namespace std;
 using namespace cooperative_groups;
 
+/// A ruleset that is kept around between selections.
+/**
+  If a ruleset is ranked less than `POPULATION_ELITES` during selection, it is kept
+  for the selection phase of the next iteration. This ensures that the best rulesets
+  are never forgotten.
+   */
 typedef struct {
+    /// The currently stored ruleset. Undefined in the 0th iteration.
     u8* gpu_ruleset;
+    /// The cumulative error of the ruleset currently stored in `gpu_ruleset`. `NaN` in the 0th iteration.
     f32 cumulative_error;
 } elite_ruleset_t;
 
+/// Holds the state for the genetic algorithm that searches for the best rulesets that best fit the given fitness function.
 typedef struct {
     /* CPU */
-    // CUB temporary storage
+    /// CUB temporary storage
     temp_storage_t temp_storage;
-    // A CUDA stream per candidate
+    /// A CUDA stream per candidate
     array<cudaStream_t, POPULATION_SIZE> streams;
-    // RNG states
+    /// RNG states
     array<curandStatePhilox4_32_10_t*, CROSSOVER_MUTATE_KERNELS_MAX> cpu_gpu_rngs;
-    // CPU-allocated initial states of the grid.
+    /// CPU-allocated initial states of the grid.
     vector<u8> cpu_initial_grid;
-    // CPU-allocated POPULATION_SELECTION-long array of pointers to mutation rulesets.
-    // These rulesets are used for:
-    // * copying the top POPULATION_ELITES rulesets into elite rulesets;
-    // * reading from during mutation, while new rulesets are written to simulation rulesets.
+    /// CPU-allocated POPULATION_SELECTION-long array of pointers to mutation rulesets.
+    /// These rulesets are used for:
+    /// * copying the top POPULATION_ELITES rulesets into elite rulesets;
+    /// * reading from during mutation, while new rulesets are written to simulation rulesets.
     array<u8*, POPULATION_SELECTION> cpu_gpu_mutation_rulesets;
-    // Rulesets which are passed on to the next population without any mutations.
+    /// Rulesets which are passed on to the next population without any mutations.
     array<elite_ruleset_t, POPULATION_ELITES> elite_rulesets;
-    // Containers for simulations of rulesets on the GPU. Used to determine the `cumulative_error`,
-    // by which simulations are selected.
+    /// Containers for simulations of rulesets on the GPU. Used to determine the `cumulative_error`,
+    /// by which simulations are selected.
     array<simulation_t, POPULATION_SIZE> simulations;
-    // The current index of the population being simulated.
+    /// The current index of the population being simulated.
     u32 population_index;
 
     /* GPU */
-    // GPU-allocated initial states of the grid.
+    /// GPU-allocated initial states of the grid.
     u8* gpu_initial_grid;
-    // GPU-allocated POPULATION_SIZE_PLUS_ELITES-long array of pointers to simulation and elite rulesets,
-    // used for sorting during selection.
+    /// GPU-allocated POPULATION_SIZE_PLUS_ELITES-long array of pointers to simulation and elite rulesets. Used for sorting during selection.
     u8** gpu_gpu_selection_rulesets_unordered;
+    /// GPU-allocated POPULATION_SIZE_PLUS_ELITES-long array of pointers to simulation and elite rulesets. Used for sorting during selection.
     u8** gpu_gpu_selection_rulesets_ordered;
-    // GPU-allocated POPULATION_SIZE_PLUS_ELITES-long array of cumulative errors of simulation and elite rulesets,
-    // used for sorting during selection.
+    /// GPU-allocated POPULATION_SIZE_PLUS_ELITES-long array of cumulative errors of simulation and elite rulesets. Used for sorting during selection.
     f32* gpu_selection_cumulative_errors_unordered;
+    /// GPU-allocated POPULATION_SIZE_PLUS_ELITES-long array of cumulative errors of simulation and elite rulesets. Used for sorting during selection.
     f32* gpu_selection_cumulative_errors_ordered;
-    // GPU-allocated POPULATION_SELECTION-long array of pointers to mutation rulesets.
+    /// GPU-allocated POPULATION_SELECTION-long array of pointers to mutation rulesets.
     u8** gpu_gpu_mutation_rulesets;
-    // GPU-allocated POPULATION_ELITES-long array of pointers to elite rulesets.
+    /// GPU-allocated POPULATION_ELITES-long array of pointers to elite rulesets.
     u8** gpu_gpu_elite_rulesets;
 } seeker_t;
-
-// A set of rules that has been evaluated with a cumulative error
-typedef struct {
-    // whether this ruleset was simulated in the current population (false),
-    // or simulation was skipped because of its low cumulative error in the previous population (true).
-    bool elite;
-    // depending on `elite`, either an index into the array of elites, or an index into the array of simulations.
-    u32 index;
-    // the ruleset's cumulative error, by which it will be ordered.
-    f32 cumulative_error;
-    // the ruleset
-    u8* gpu_ruleset;
-} evaluated_ruleset_t;
 
 /*
  * Global state
  */
-// Time measurement events
+/// Time measurement events
 cudaEvent_t start, stop;
-// Whether an interrupt signal was received (^C)
+/// Whether an interrupt signal was received (^C)
 sig_atomic_t sigint_received = 0;
 
+/// Fills the neighbour array `neighbours` with relative offsets of neighbouring cells, depending on the cell position `x`, `y`.
 __inline__ __host__ __device__ void get_neighbours(i32 x, i32 y, i32vec2 neighbours[CELL_NEIGHBOURHOOD_SIZE]) {
 #if GRID_GEOMETRY == GRID_GEOMETRY_SQUARE
     #if CELL_NEIGHBOURHOOD_TYPE == CELL_NEIGHBOURHOOD_TYPE_VERTEX
@@ -168,6 +170,7 @@ __inline__ __host__ __device__ void get_neighbours(i32 x, i32 y, i32vec2 neighbo
 #endif
 }
 
+/// Prints some primary settings of the configuration `config.h`.
 void print_configuration() {
     if (POPULATION_SELECTION > POPULATION_SIZE) {
         printf("`POPULATION_SELECTION` (%d) may not exceed `POPULATION_SIZE` (%d).", POPULATION_SELECTION, POPULATION_SIZE);
@@ -222,6 +225,7 @@ void print_configuration() {
     printf("\n");
 }
 
+/// Calculates the 1D index of a cell within shared memory.
 __inline__ __host__ __device__ i32 get_cell_index_shared(i32 x, i32 y) {
     assert(x >= 0);
     assert(x < SHARED_SUBGRID_LENGTH);
@@ -231,7 +235,7 @@ __inline__ __host__ __device__ i32 get_cell_index_shared(i32 x, i32 y) {
     return x + y * SHARED_SUBGRID_LENGTH;
 }
 
-// returns an index into a 2D row-aligned array
+/// Returns a 1D index into a 2D row-aligned (pitched) grid.
 __inline__ __host__ __device__ i32 get_cell_index(i32 x, i32 y) {
     x = mod(x, GRID_WIDTH);
     y = mod(y, GRID_HEIGHT);
@@ -239,6 +243,7 @@ __inline__ __host__ __device__ i32 get_cell_index(i32 x, i32 y) {
     return x + y * GRID_PITCH;
 }
 
+/// Returns whether the cell is considered "fit" based on its state and/or state change.
 __inline__ __host__ __device__ bool cell_state_fit(u8 state_prev, u8 state_next) {
     if (FITNESS_EVAL == FITNESS_EVAL_STATE) {
         return state_next == FITNESS_EVAL_STATE_INDEX;
@@ -249,6 +254,7 @@ __inline__ __host__ __device__ bool cell_state_fit(u8 state_prev, u8 state_next)
     }
 }
 
+/// Computes the next state for the given cell, using the provided ruleset.
 __host__ __device__ u8 get_next_state(u8 current_state, u8* neighbours, u8* ruleset) {
     // In debug mode, validate the `current_state` argument.
     assert(current_state < CELL_STATES);
@@ -276,6 +282,7 @@ __host__ __device__ u8 get_next_state(u8 current_state, u8* neighbours, u8* rule
     return ruleset[index];
 }
 
+/// Updates the given cell using the provided ruleset, while calculating whether the cell is considered "fit". Does **not** use shared memory.
 __host__ __device__ bool update_cell(u8* in_grid, u8* out_grid, u8* ruleset, i32 x, i32 y) {
     i32 cell_index = get_cell_index(x, y);
     u8 current_state = in_grid[cell_index];
@@ -299,6 +306,7 @@ __host__ __device__ bool update_cell(u8* in_grid, u8* out_grid, u8* ruleset, i32
     return cell_state_fit(current_state, next_state);
 }
 
+/// Updates the given cell using the provided ruleset, while calculating whether the cell is considered "fit". Does use shared memory.
 __device__ bool update_cell_shared(u8* in_subgrid_shared, u8* out_grid, u8* ruleset, i32 x_global, i32 y_global, i32 x_shared, i32 y_shared) {
     i32 cell_index_shared = get_cell_index_shared(x_shared, y_shared);
     i32 cell_index_global = get_cell_index(x_global, y_global);
@@ -323,7 +331,8 @@ __device__ bool update_cell_shared(u8* in_subgrid_shared, u8* out_grid, u8* rule
     return cell_state_fit(current_state, next_state);
 }
 
-/*
+/// Simulates a single iteration on the CPU.
+/**
  * Simulates a single iteration of the cellular automaton according to the provided ruleset.
  * Performs partial collection of fit cells according to the fit cell criterion `FITNESS_EVAL`.
  *
@@ -348,6 +357,7 @@ __host__ void cpu_simulate_step(u8* in_grid, u8* out_grid, u8* ruleset, u32* fit
     }
 }
 
+/// Simulates a single iteration on the GPU using shared memory.
 /*
  * Simulates a single iteration of the cellular automaton according to the provided ruleset.
  * Performs partial collection of fit cells according to the fit cell criterion `FITNESS_EVAL`.
@@ -459,6 +469,7 @@ __global__ void gpu_simulate_step_kernel_shared(u8* in_grid, u8* out_grid, u8* r
     fit_cells_block_sums[block_index_1d] = shared_fit_cells_u32[0];
 }
 
+/// Simulates a single iteration on the GPU using **no** shared memory.
 __global__ void gpu_simulate_step_kernel_noshared(u8* in_grid, u8* out_grid, u8* ruleset, u32* fit_cells_block_sums) {
     i32 x = threadIdx.x + blockIdx.x * BLOCK_LENGTH;
     i32 y = threadIdx.y + blockIdx.y * BLOCK_LENGTH;
@@ -482,7 +493,12 @@ __global__ void gpu_simulate_step_kernel_noshared(u8* in_grid, u8* out_grid, u8*
     atomicAdd(&fit_cells_block_sums[block_index_1d], (u32) fit);
 }
 
-// Simulates a single iteration
+/// Simulates a single iteration of the cellular automaton.
+/**
+  @param simulation: The simulation which to compute the next iteration for.
+  @param async: `false`, if explicit synchronisation should be performed; `true` if multiple simulations are expected to run concurrently.
+  @param reduce_fit_cells: Whether the fit cell count should be computed for this iteration.
+  */
 void simulate_step(simulation_t* simulation, bool async, bool reduce_fit_cells) {
     const i32 STEPS = 1;
     // might as well measure the time since we have to wait for the result anyway
@@ -494,7 +510,7 @@ void simulate_step(simulation_t* simulation, bool async, bool reduce_fit_cells) 
     simulation_gpu_states_map(simulation, &gpu_grid_states_1, &gpu_grid_states_2);
 
     if (!async) {
-        // ulozeni pocatecniho casu
+        // Store the initial time.
         CHECK_ERROR(cudaEventRecord(start, simulation->stream));
     }
 
@@ -511,15 +527,18 @@ void simulate_step(simulation_t* simulation, bool async, bool reduce_fit_cells) 
     }
 
     if (!async) {
-        // ulozeni casu ukonceni simulace
+        // Store the finish time. 
         CHECK_ERROR(cudaEventRecord(stop, simulation->stream));
         CHECK_ERROR(cudaEventSynchronize(stop));
 
         float elapsedTime;
 
-        // vypis casu simulace
+        // Compute the total update time.
         CHECK_ERROR(cudaEventElapsedTime(&elapsedTime, start, stop));
-        /* printf("Update: %f ms\n", elapsedTime); */
+
+        if (SHOW_PRINT_UPDATE_TIME) {
+            printf("Update: %f ms\n", elapsedTime);
+        }
     }
 
 #if CPU_VERIFY
@@ -564,7 +583,7 @@ void simulate_step(simulation_t* simulation, bool async, bool reduce_fit_cells) 
     simulation_gpu_states_unmap(simulation);
 }
 
-// called every frame
+/// Called every frame
 void idle_func() {
     if (!editing_mode) {
         simulate_step(&preview_simulation, false, false);
@@ -577,7 +596,7 @@ void window_close_callback(GLFWwindow* window) {
     finalize();
 }
 
-// inicializace CUDA - alokace potrebnych dat a vygenerovani pocatecniho stavu lifu
+/// Initialize the program
 void initialize(int argc, char **argv) {
     char* grid_file = argv[2];
 
@@ -611,7 +630,7 @@ void initialize(int argc, char **argv) {
     CHECK_ERROR(cudaEventCreate(&stop));
 }
 
-// funkce volana pri ukonceni aplikace, uvolni vsechy prostredky alokovane v CUDA 
+/// Performed before closing the program
 void finalize(void) {
     simulation_free(&preview_simulation);
 
@@ -622,10 +641,12 @@ void finalize(void) {
     finalize_draw();
 }
 
+/// SIGINT handler that exits the application immediately
 void sigint_handler_abort(int signal) {
     exit(1);
 }
 
+/// SIGINT handler that requests the application to close, and if received again, closes the application immediately.
 void sigint_handler_soft(int signal) {
     sigint_received += 1;
 
@@ -635,6 +656,7 @@ void sigint_handler_soft(int signal) {
     }
 }
 
+/// Acknowledge SIGINT received to the user.
 void check_sigint(bool* sigint_acknowledged) {
     if (sigint_received > 0 && !*sigint_acknowledged) {
         *sigint_acknowledged = true;
@@ -642,6 +664,9 @@ void check_sigint(bool* sigint_acknowledged) {
     }
 }
 
+/**
+ * Simulate the current population to compute the cumulative errors for every ruleset.
+ */
 void population_simulate(array<simulation_t, POPULATION_SIZE>& simulations) {
     bool sigint_acknowledged = false;
 
@@ -689,22 +714,8 @@ void population_simulate(array<simulation_t, POPULATION_SIZE>& simulations) {
     }
 }
 
-bool comparator(evaluated_ruleset_t& a, evaluated_ruleset_t& b) {
-    return a.cumulative_error < b.cumulative_error;
-}
-
+/// Order population by cumulative error.
 void seeker_population_order(seeker_t* seeker) {
-    /* for (simulation_t& simulation : seeker->simulations) { */
-    /*     simulation_copy_ruleset_gpu_cpu(&simulation); */
-    /* } */
-
-    /* // Wait for all rulesets to be copied */
-    /* for (simulation_t& simulation : seeker->simulations) { */
-    /*     cudaStreamSynchronize(simulation.stream); */
-    /* } */
-
-    /* std::vector<evaluated_ruleset_t> evaluated_rulesets; */
-
     bool use_elites = seeker->population_index > 0;
 
     for (u32 i = 0; i < POPULATION_SIZE; i++) {
@@ -800,11 +811,29 @@ void seeker_population_order(seeker_t* seeker) {
     cudaDeviceSynchronize();
 }
 
+/// Initialize PRNGs using the provided seed.
+/**
+ *  @param rngs: The PRNG states to initialize.
+ *  @param seed: The seed to initialize them with.
+ */
 __global__ void kernel_init_rngs(curandStatePhilox4_32_10_t* rngs, u64 seed) {
     int rng_index = threadIdx.x + blockIdx.x * blockDim.x;
     curand_init(seed, rng_index, 0, &rngs[rng_index]);
 }
 
+/// Perform crossover using the uniform method `CROSSOVER_METHOD_UNIFORM`.
+/**
+ *  This kernel generates a random bit for each rule in the rulesets, which is used to decide whether the resulting
+ *  rule should be copied from the first or the second ruleset.
+ *  Quite expensive.
+ *
+ *  @param rngs: The PRNGs to use for the generation of random bits.
+ *  @param source_ruleset_a: The first source ruleset.
+ *  @param source_ruleset_b: The second source ruleset.
+ *  @param target_ruleset: The output ruleset the result is written to.
+ *  @param item_blocks: Number of items each thread shall process.
+ *  @param ruleset_size: The size of the rulesets.
+ */
 __global__ void kernel_crossover(curandStatePhilox4_32_10_t* rngs, u8* source_ruleset_a, u8* source_ruleset_b, u8* target_ruleset, u32 item_blocks, u32 ruleset_size) {
     int rng_index = threadIdx.x + blockIdx.x * blockDim.x;
     curandStatePhilox4_32_10_t rng = rngs[rng_index]; // load RNG state from global memory
@@ -845,6 +874,15 @@ break_outer_loop:
     rngs[rng_index] = rng; // store RNG state back to global memory for subsequent kernel calls
 }
 
+/// Perform initialization of a ruleset with random rules.
+/**
+ *  This kernel generates random rules for the provided ruleset.
+ *
+ *  @param rngs: The PRNGs to use for the generation of random bits.
+ *  @param target_ruleset: The output ruleset the result is written to.
+ *  @param item_blocks: Number of items each thread shall process.
+ *  @param ruleset_size: The size of the rulesets.
+ */
 __global__ void kernel_randomize_ruleset(curandStatePhilox4_32_10_t* rngs, u8* target_ruleset, u32 item_blocks, u32 ruleset_size) {
     int rng_index = threadIdx.x + blockIdx.x * blockDim.x;
     curandStatePhilox4_32_10_t rng = rngs[rng_index]; // load RNG state from global memory
@@ -871,6 +909,18 @@ break_outer_loop:
     rngs[rng_index] = rng; // store RNG state back to global memory for subsequent kernel calls
 }
 
+/// Perform mutation of a ruleset using the `MUTATION_METHOD_UNIFORM` method.
+/**
+ *  This kernel generates a random float in the range [0, 1) for each rule in the ruleset, to compare with `mutation_chance`,
+ *  and mutates the rule if the float is less than `MUTATION_CHANCE`.
+ *  Very expensive compared to other mutation methods, but accurate.
+ *
+ *  @param rngs: The PRNGs to use for the generation of random bits.
+ *  @param target_ruleset: The output ruleset the result is written to.
+ *  @param item_blocks: Number of items each thread shall process.
+ *  @param ruleset_size: The size of the rulesets.
+ *  @param mutation_chance: The change for a rule to mutate.
+ */
 __global__ void kernel_mutate_uniform(curandStatePhilox4_32_10_t* rngs, u8* target_ruleset, u32 item_blocks, u32 ruleset_size, f32 mutation_chance) {
     int rng_index = threadIdx.x + blockIdx.x * blockDim.x;
     curandStatePhilox4_32_10_t rng = rngs[rng_index]; // load RNG state from global memory
@@ -903,6 +953,18 @@ break_outer_loop:
     rngs[rng_index] = rng; // store RNG state back to global memory for subsequent kernel calls
 }
 
+/// Perform mutation of a ruleset using the `MUTATION_METHOD_BINOMIAL_KERNEL` method.
+/**
+ *  This kernel receives a number of mutations, which is a sample of the binomial distribution of the number of mutations,
+ *  and for each mutation, generates a random rule index to mutate.
+ *  Very efficient, but inaccurate for high `mutation_chance`s, because the same rule index may be generated multiple times.
+ *
+ *  @param rngs: The PRNGs to use for the generation of random bits.
+ *  @param target_ruleset: The output ruleset the result is written to.
+ *  @param item_blocks: Number of items each thread shall process.
+ *  @param ruleset_size: The size of the rulesets.
+ *  @param mutations: The number of mutations, a sample of the binomial distribution of the number of mutations.
+ */
 __global__ void kernel_mutate_binomial(curandStatePhilox4_32_10_t* rngs, u8* target_ruleset, u32 item_blocks, u32 ruleset_size, u32 mutations) {
     int rng_index = threadIdx.x + blockIdx.x * blockDim.x;
     curandStatePhilox4_32_10_t rng = rngs[rng_index]; // load RNG state from global memory
@@ -935,11 +997,13 @@ break_outer_loop:
     rngs[rng_index] = rng;
 }
 
+/// Initialize the PRNGs with a random seed.
 void seed_rng_set(curandStatePhilox4_32_10_t* rng_set, cudaStream_t stream) {
     u64 seed = random_sample_u64();
     kernel_init_rngs<<<CROSSOVER_MUTATE_BLOCKS_MAX, THREADS_PER_BLOCK, 0, stream>>>(rng_set, seed);
 }
 
+/// Randomize all rulesets. See `kernel_randomize_ruleset`.
 void seeker_randomize_rulesets(seeker_t* seeker) {
     u32 ruleset_size = get_ruleset_size();
     u32 blocks = min<u32>((ruleset_size + MUTATE_ITEMS_PER_BLOCK - 1) / MUTATE_ITEMS_PER_BLOCK, CROSSOVER_MUTATE_BLOCKS_MAX);
@@ -998,6 +1062,13 @@ void seeker_randomize_rulesets(seeker_t* seeker) {
     cudaDeviceSynchronize();
 }
 
+/// Perform crossover and mutation.
+/**
+ *  The best `POPULATION_SELECTION` of rulesets (with lowest cumulative error) are taken.
+ *  Then, `POPULATION_SIZE` rulesets are created using the following way:
+ *  - Two rulesets are chosen at random from the selection population, and the crossover method is applied to combine them.
+ *  - The mutation method is applied to the resulting combination of rulesets.
+ */
 void seeker_crossover_mutation(seeker_t* seeker) {
     u32 ruleset_size = get_ruleset_size();
     u32 blocks_crossover = min<u32>((ruleset_size + CROSSOVER_ITEMS_PER_BLOCK - 1) / CROSSOVER_ITEMS_PER_BLOCK, CROSSOVER_MUTATE_BLOCKS_MAX);
@@ -1164,6 +1235,7 @@ void seeker_crossover_mutation(seeker_t* seeker) {
     cudaDeviceSynchronize();
 }
 
+/// Initialize the seeker state.
 void seeker_init(int argc, char **argv, seeker_t* seeker) {
     temp_storage_init(&seeker->temp_storage);
 
@@ -1228,6 +1300,7 @@ void seeker_init(int argc, char **argv, seeker_t* seeker) {
     printf("Initialized.\n");
 }
 
+/// Runs the main seeker loop, which performs the iterations of the genetic algorithm.
 void seeker_loop(seeker_t* seeker) {
     signal(SIGINT, sigint_handler_soft);
 
@@ -1272,6 +1345,7 @@ void seeker_loop(seeker_t* seeker) {
     signal(SIGINT, sigint_handler_abort);
 }
 
+/// Performs disk storage of the best rulesets found.
 void seeker_output(seeker_t* seeker) {
     u32 rulesets_to_save;
 
@@ -1309,12 +1383,14 @@ void seeker_output(seeker_t* seeker) {
     printf("%u rulesets saved.\n", rulesets_to_save);
 }
 
+/// Destructor
 void seeker_finalize(seeker_t* seeker) {
     for (simulation_t& simulation : seeker->simulations) {
         simulation_free(&simulation);
     }
 }
 
+/// Main entry point of the `seek` procedure.
 int main_seek(int argc, char **argv) {
     initialize(argc, argv);
 
@@ -1328,6 +1404,7 @@ int main_seek(int argc, char **argv) {
     return 0;
 }
 
+/// Main entry point of the `show` procedure.
 int main_show(int argc, char **argv) {
     init_draw(argc, argv, window_close_callback, idle_func, false);
     initialize(argc, argv);
@@ -1335,6 +1412,7 @@ int main_show(int argc, char **argv) {
     return ui_loop();
 }
 
+/// Main entry point of the `edit` procedure.
 int main_edit(int argc, char** argv) {
     init_draw(argc, argv, window_close_callback, idle_func, true);
     initialize(argc, argv);
@@ -1342,6 +1420,7 @@ int main_edit(int argc, char** argv) {
     return ui_loop();
 }
 
+/// Global main entry point.
 int main(int argc, char **argv) {
     global_argc = argc;
     global_argv = argv;

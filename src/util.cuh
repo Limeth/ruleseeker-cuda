@@ -1,8 +1,18 @@
 #pragma once
+
+/**
+ * @file
+ * @brief Utility functions, such as error handling, type aliases, RNG, etc.
+ */
+
 #include <bsd/stdlib.h>
 #include <stdio.h>
 #include <iostream>
 
+/**
+ * @name Type aliases
+ * @{
+ */
 #define i8 char
 #define i16 short
 #define i32 int
@@ -101,8 +111,12 @@
 #define make_u64vec4(...) make_ulong4(__VA_ARGS__)
 #define make_f32vec4(...) make_float4(__VA_ARGS__)
 #define make_f64vec4(...) make_double4(__VA_ARGS__)
+///@}
 
-// funkce pro osetreni chyb
+/**
+ * @name CUDA error handling
+ * @{
+ */
 static inline __host__ __device__ void check_error(cudaError_t error, const char *file, int line) {
     if (error != cudaSuccess) {
 #ifdef __CUDA_ARCH__
@@ -116,6 +130,7 @@ static inline __host__ __device__ void check_error(cudaError_t error, const char
 }
 
 #define CHECK_ERROR(error) (check_error(error, __FILE__, __LINE__))
+///@}
 
 #ifdef NDEBUG
     #define IS_DEBUG false
@@ -133,7 +148,7 @@ static inline __host__ __device__ void check_error(cudaError_t error, const char
         }                                                                  \
     } while(false);
 
-// Callback function for printing debug statements
+/// Callback function for printing OpenGL debug statements
 void APIENTRY gl_debug_message_callback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar *msg, const void *data) {
     const char* _source;
     const char* _type;
@@ -229,6 +244,7 @@ void APIENTRY gl_debug_message_callback(GLenum source, GLenum type, GLuint id, G
             id, _type, _severity, _source, msg);
 }
 
+/// Sleep for `msec` milliseconds.
 int msleep(long msec) {
     struct timespec ts;
     int res;
@@ -248,6 +264,7 @@ int msleep(long msec) {
     return res;
 }
 
+/// Asynchronously allocate GPU memory and fill it with 0.
 cudaError_t cudaCallocAsync(void** ptr, size_t size, cudaStream_t stream) {
     cudaError_t error;
     error = cudaMalloc(ptr, size);
@@ -257,6 +274,7 @@ cudaError_t cudaCallocAsync(void** ptr, size_t size, cudaStream_t stream) {
     return cudaMemsetAsync(*ptr, 0, size, stream);
 }
 
+/// Asynchronously allocate CPU paged memory and fill it with 0.
 cudaError_t cudaCallocHostAsync(void** ptr, size_t size, cudaStream_t stream) {
     cudaError_t error;
     error = cudaMallocHost(ptr, size);
@@ -266,7 +284,7 @@ cudaError_t cudaCallocHostAsync(void** ptr, size_t size, cudaStream_t stream) {
     return cudaMemsetAsync(*ptr, 0, size, stream);
 }
 
-// Write bytes to a file
+/// Write bytes to a file
 bool file_write(char* filename, void* buffer, u32 buffer_len) {
     FILE* file = fopen(filename, "wb");
 
@@ -278,7 +296,7 @@ bool file_write(char* filename, void* buffer, u32 buffer_len) {
     return true;
 }
 
-// Load bytes from a file
+/// Load bytes from a file
 bool file_load(char* filename, u8* buffer, u32 buffer_len) {
     FILE* file = fopen(filename, "rb");
 
@@ -294,7 +312,7 @@ bool file_load(char* filename, u8* buffer, u32 buffer_len) {
     return true;
 }
 
-// Writes a 2d buffer with pitch to a file
+/// Writes a 2d buffer with pitch to a file
 bool file_write_2d_pitch(char* filename, u8* buffer, u32 width, u32 height, u32 pitch) {
     FILE* file = fopen(filename, "wb");
 
@@ -310,7 +328,7 @@ bool file_write_2d_pitch(char* filename, u8* buffer, u32 width, u32 height, u32 
     return true;
 }
 
-// Writes a 2d buffer with pitch to a file
+/// Writes a 2d buffer with pitch to a file
 bool file_load_2d_pitch(char* filename, u8* buffer, u32 width, u32 height, u32 pitch) {
     FILE* file = fopen(filename, "rb");
 
@@ -330,12 +348,14 @@ bool file_load_2d_pitch(char* filename, u8* buffer, u32 width, u32 height, u32 p
     return true;
 }
 
+/// Initialize the CPU RNG.
 void random_init() {
     if (DETERMINISTIC_RANDOMNESS) {
         srand(0);
     }
 }
 
+/// Sample a u32 value with uniform distribution.
 u32 random_sample_u32(u32 upper_bound_exclusive) {
     if (DETERMINISTIC_RANDOMNESS) {
         // not uniform, but oh well
@@ -345,6 +365,7 @@ u32 random_sample_u32(u32 upper_bound_exclusive) {
     }
 }
 
+/// Sample a u64 value with uniform distribution.
 u64 random_sample_u64() {
     if (DETERMINISTIC_RANDOMNESS) {
         // not uniform, but oh well
@@ -356,33 +377,41 @@ u64 random_sample_u64() {
     }
 }
 
+/// Sample an f32 value with uniform distribution in range [0; 1).
 f32 random_sample_f32_normalized() {
     return ((f32) random_sample_u32(RAND_MAX) / (f32) (RAND_MAX - 1));
 }
 
+/// Sample an f32 value with uniform distribution in range [0; upper_bound_inclusive).
 f32 random_sample_f32(f32 upper_bound_inclusive) {
     return random_sample_f32_normalized() * upper_bound_inclusive;
 }
 
+/// Sample an f64 value with uniform distribution in range [0; 1).
 f64 random_sample_f64_normalized() {
     return ((f64) random_sample_u32(RAND_MAX) / (f64) (RAND_MAX - 1));
 }
 
+/// Sample an f64 value with uniform distribution in range [0; upper_bound_inclusive).
 f64 random_sample_f64(f64 upper_bound_inclusive) {
     return random_sample_f64_normalized() * upper_bound_inclusive;
 }
 
-// Temporary storage for CUB-related routines
+/// Temporary storage for CUB-related routines
 typedef struct {
+    /// GPU-allocation for CUB-related data.
     u8* allocation;
+    /// The size of the allocation.
     size_t size;
 } temp_storage_t;
 
+/// Initialize `temp_storage_t`.
 void temp_storage_init(temp_storage_t* temp_storage) {
     temp_storage->allocation = NULL;
     temp_storage->size = 0;
 }
 
+/// Reallocate the temporary storage with enough size, if necessary.
 void temp_storage_ensure(temp_storage_t* temp_storage, size_t size, cudaStream_t stream) {
     if (size <= temp_storage->size) {
         return; // temp storage large enough, no need for realloc

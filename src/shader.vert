@@ -19,12 +19,8 @@ vec3 hsv2rgb(vec3 c) {
     return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
 }
 
-void main() {
-    int cell_index = gl_InstanceID + gl_BaseInstance;
-    out_cell_index = cell_index;
-    uint grid_pitch; GET_GRID_PITCH(grid_pitch)
-    ivec2 cell = ivec2(cell_index % grid_pitch, cell_index / grid_pitch);
-
+// Computes the vertex position for the given cell, and the viewport size.
+void get_vertex_position(in ivec2 cell, out vec2 position, out vec2 viewport_size) {
 #if GRID_GEOMETRY == GRID_GEOMETRY_SQUARE
     vec2[4] offsets_vertex = {
         vec2(0, 0),
@@ -32,8 +28,8 @@ void main() {
         vec2(1, 1),
         vec2(0, 1),
     };
-    vec2 viewport_size = vec2(GRID_WIDTH, GRID_HEIGHT);
-    vec2 position = (offsets_vertex[gl_VertexID] + cell) / viewport_size;
+    viewport_size = vec2(GRID_WIDTH, GRID_HEIGHT);
+    position = (offsets_vertex[gl_VertexID] + cell) / viewport_size;
 #elif GRID_GEOMETRY == GRID_GEOMETRY_TRIANGLE
     vec2[2][3] offsets_vertex = {
         {
@@ -50,8 +46,8 @@ void main() {
     uint pointing_down = (cell.x + cell.y) % 2;
     vec2 offsets_instance = cell * vec2(0.5, 1.0);
     vec2 stretch = vec2(1.0, sqrt(0.75));
-    vec2 viewport_size = vec2(GRID_WIDTH * 0.5 + 0.5, GRID_HEIGHT * sqrt(0.75));
-    vec2 position = (offsets_vertex[pointing_down][gl_VertexID] + offsets_instance) * stretch / viewport_size;
+    viewport_size = vec2(GRID_WIDTH * 0.5 + 0.5, GRID_HEIGHT * sqrt(0.75));
+    position = (offsets_vertex[pointing_down][gl_VertexID] + offsets_instance) * stretch / viewport_size;
 #elif GRID_GEOMETRY == GRID_GEOMETRY_HEXAGON
     vec2[6] offsets_vertex = {
         vec2( 1.0, -0.5),
@@ -65,9 +61,20 @@ void main() {
     vec2 offsets_instance = vec2(1.0 + float(even_row), 1.0) + cell * vec2(2.0, 1.5);
     float cell_width_half = cos(TAU / 12.0);
     vec2 stretch = vec2(cell_width_half, 1.0);
-    vec2 viewport_size = vec2((GRID_WIDTH + 0.5) * cell_width_half * 2, GRID_HEIGHT * 1.5 + 0.5);
-    vec2 position = (offsets_vertex[gl_VertexID] + offsets_instance) * stretch / viewport_size;
+    viewport_size = vec2((GRID_WIDTH + 0.5) * cell_width_half * 2, GRID_HEIGHT * 1.5 + 0.5);
+    position = (offsets_vertex[gl_VertexID] + offsets_instance) * stretch / viewport_size;
 #endif
+}
+
+void main() {
+    int cell_index = gl_InstanceID + gl_BaseInstance;
+    out_cell_index = cell_index;
+    uint grid_pitch; GET_GRID_PITCH(grid_pitch)
+    ivec2 cell = ivec2(cell_index % grid_pitch, cell_index / grid_pitch);
+    vec2 position;
+    vec2 viewport_size;
+
+    get_vertex_position(cell, position, viewport_size);
 
     if (KEEP_ASPECT_RATIO) {
         // Could be done by a uniform matrix, but whatever.

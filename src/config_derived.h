@@ -1,6 +1,12 @@
 #pragma once
 
+/**
+ * @file
+ * @brief Constants derived from the user-specified constants in `config.h`.
+ */
+
 // Utils
+
 #define POW2_CEIL(x_) ({ \
     unsigned int x = x_; \
     x -= 1;              \
@@ -22,6 +28,7 @@
     field = field + 1;
 
 // Automatically derived constants from the configuration
+
 #if GRID_GEOMETRY == GRID_GEOMETRY_SQUARE
     #if CELL_NEIGHBOURHOOD_TYPE == CELL_NEIGHBOURHOOD_TYPE_VERTEX
         #define CELL_NEIGHBOURHOOD_SIZE 8
@@ -50,27 +57,34 @@
     #define CELL_VERTICES 6
 #endif
 
-#define POPULATION_SIZE_PLUS_ELITES (POPULATION_SIZE + POPULATION_ELITES) // max size of the population used for the selection (each selection phase also includes the elites from the previous population)
-#define POPULATION_MUTATED (POPULATION_SIZE - POPULATION_ELITES) // number of mutated candidates in the population
+/// Max size of the population used for the selection (each selection phase also includes the elites from the previous population).
+#define POPULATION_SIZE_PLUS_ELITES (POPULATION_SIZE + POPULATION_ELITES)
+/// Number of mutated candidates in the population.
+#define POPULATION_MUTATED (POPULATION_SIZE - POPULATION_ELITES)
 #define GRID_AREA (GRID_WIDTH * GRID_HEIGHT)
-#define BLOCK_AREA            (BLOCK_LENGTH * BLOCK_LENGTH)                     // threads per execution block
-#define GRID_WIDTH_IN_BLOCKS  ((GRID_WIDTH + BLOCK_LENGTH - 1) / BLOCK_LENGTH)  // execution grid width
-#define GRID_HEIGHT_IN_BLOCKS ((GRID_HEIGHT + BLOCK_LENGTH - 1) / BLOCK_LENGTH) // execution grid height
+/// Threads per execution block.
+#define BLOCK_AREA            (BLOCK_LENGTH * BLOCK_LENGTH)
+/// Execution grid width.
+#define GRID_WIDTH_IN_BLOCKS  ((GRID_WIDTH + BLOCK_LENGTH - 1) / BLOCK_LENGTH)
+/// execution grid height.
+#define GRID_HEIGHT_IN_BLOCKS ((GRID_HEIGHT + BLOCK_LENGTH - 1) / BLOCK_LENGTH)
 #define GRID_AREA_IN_BLOCKS (GRID_WIDTH_IN_BLOCKS * GRID_HEIGHT_IN_BLOCKS)
 #define GRID_PITCH (POW2_CEIL(GRID_WIDTH))
 #define DIM_BLOCKS (dim3(GRID_WIDTH_IN_BLOCKS, GRID_HEIGHT_IN_BLOCKS))
 #define DIM_THREADS (dim3(BLOCK_LENGTH, BLOCK_LENGTH))
 #define GET_GRID_PITCH(field) GET_POW2_CEIL(field, GRID_WIDTH)
 #define GRID_AREA_WITH_PITCH (GRID_PITCH * GRID_HEIGHT)
-#define SHARED_SUBGRID_MARGIN 2 // a 2 cell margin on each side (max of 1 for square, 1 for hex, 2 for triangle; also simplifies neighbour cell addressing)
+/// A 2 cell margin on each side (max of 1 for square, 1 for hex, 2 for triangle; also simplifies neighbour cell addressing).
+#define SHARED_SUBGRID_MARGIN 2
 #define SHARED_SUBGRID_LENGTH (BLOCK_LENGTH + 2 * SHARED_SUBGRID_MARGIN)
-#define SHARED_SUBGRID_AREA (SHARED_SUBGRID_LENGTH * SHARED_SUBGRID_LENGTH) // number of states loaded to shared memory
-#define SHARED_SUBGRID_LOAD_ITERATIONS ((SHARED_SUBGRID_AREA + BLOCK_AREA - 1) / BLOCK_AREA) // number of iterations required to load the shared subgrid in parallel using all threads in the block
+/// number of states loaded to shared memory.
+#define SHARED_SUBGRID_AREA (SHARED_SUBGRID_LENGTH * SHARED_SUBGRID_LENGTH)
+/// Number of iterations required to load the shared subgrid in parallel using all threads in the block.
+#define SHARED_SUBGRID_LOAD_ITERATIONS ((SHARED_SUBGRID_AREA + BLOCK_AREA - 1) / BLOCK_AREA)
 #define THREADS_PER_BLOCK BLOCK_AREA
 /* #define MUTATION_BLOCKS ((POPULATION_SIZE + THREADS_PER_BLOCK - 1) / THREADS_PER_BLOCK) */
 /* #define MUTATION_DIM_BLOCKS (dim3(MUTATION_BLOCKS)) */
-// A single `generate` invocation of the Philox 4x32 RNG generates enough bits
-// to crossover this many rules per thread.
+/// A single `generate` invocation of the Philox 4x32 RNG generates enough bits to crossover this many rules per thread.
 #define CROSSOVER_MUTATE_RNGS_PER_KERNEL (CROSSOVER_MUTATE_BLOCKS_MAX * THREADS_PER_BLOCK)
 #define CROSSOVER_ITEMS_PER_THREAD (32 * 4)
 #define CROSSOVER_ITEMS_PER_BLOCK (CROSSOVER_ITEMS_PER_THREAD * THREADS_PER_BLOCK)
