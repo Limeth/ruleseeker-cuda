@@ -10,3 +10,4 @@ shaders.cuh
 **/*.rsg
 html
 latex
+.gdb_history
