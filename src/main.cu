@@ -275,7 +275,7 @@ __host__ __device__ u8 get_next_state(u8 current_state, u8* neighbours, u8* rule
     }
 #endif
 
-    u32 index = get_rule_index(get_cell_neighbourhood_combinations(), current_state, CELL_STATES, neighbours);
+    u32 index = get_rule_index(get_cell_neighbourhood_combinations(), current_state, CELL_STATES, neighbours, CELL_NEIGHBOURHOOD_SIZE);
 
     assert(index < get_ruleset_size());
 

@@ -74,9 +74,10 @@ __inline__ __host__ __device__ u32 get_rule_index(
         u32 cell_neighbourhood_combinations,
         u8 state,
         u32 state_count_len,
-        u8* state_count
+        u8* state_count,
+        u32 neighbourhood_size
 ) {
-    return ((u32) state) * cell_neighbourhood_combinations + combination_index_with_repetition(state_count_len, state_count);
+    return ((u32) state) * cell_neighbourhood_combinations + combination_index_with_repetition_inner(state_count_len, state_count, neighbourhood_size);
 }
 
 /// Compute `cell_neighbourhood_combinations` for use in `get_rule_index`.
