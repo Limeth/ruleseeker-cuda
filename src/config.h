@@ -93,15 +93,15 @@
  * Grids wrap around, as if they were the surface of a torus.
  */
 /// [uint] Simulation grid width.
-#define GRID_WIDTH  32
+#define GRID_WIDTH  16
 /// [uint] Simulation grid height.
-#define GRID_HEIGHT 32
+#define GRID_HEIGHT 8
 /// [enum] The shape of the grid's cells (square for Conway's GoL).
 #define GRID_GEOMETRY GRID_GEOMETRY_HEXAGON
 /// [enum] Which cells are considered in the neighbourhood (vertex for Conway's GoL).
 #define CELL_NEIGHBOURHOOD_TYPE CELL_NEIGHBOURHOOD_TYPE_EDGE
 /// [uchar] Number of states a cell can become (2 for Conway's GoL).
-#define CELL_STATES 2
+#define CELL_STATES 3
 ///@}
 
 // Conway's GoL:

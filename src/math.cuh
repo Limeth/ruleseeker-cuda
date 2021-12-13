@@ -9,7 +9,7 @@
 #include <iostream>
 #include <cassert>
 
-/// binomial coefficient / nCk
+/// binomial coefficient / nCr
 __host__ __device__ u64 binomial(u32 n, u32 k) {
     /* if (k > n - k) { */
     /*     k = n - k; */

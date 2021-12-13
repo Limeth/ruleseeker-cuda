@@ -712,6 +712,10 @@ void population_simulate(array<simulation_t, POPULATION_SIZE>& simulations) {
 
         check_sigint(&sigint_acknowledged);
     }
+
+    for (simulation_t& simulation : simulations) {
+        simulation_cumulative_error_normalize(&simulation);
+    }
 }
 
 /// Order population by cumulative error.
