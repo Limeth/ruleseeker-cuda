@@ -1171,7 +1171,7 @@ void seeker_crossover_mutation(seeker_t* seeker) {
             seed_rng_set(rng_set, stream);
             kernel_mutate_uniform<<<blocks_mutate_uniform, THREADS_PER_BLOCK, 0, stream>>>(rng_set, simulation->gpu_ruleset, item_blocks_mutate_uniform, ruleset_size, mutation_chance);
         }
-    } else if (MUTATION_METHOD == MUTATION_METHOD_BINOMIAL_MEMCPY || MUTATION_METHOD == MUTATION_METHOD_BINOMIAL_KERNEL) {
+    } else if (MUTATION_METHOD == MUTATION_METHOD_BINOMIAL_MEMSET || MUTATION_METHOD == MUTATION_METHOD_BINOMIAL_KERNEL) {
         for (u32 simulation_index = 0; simulation_index < POPULATION_SIZE; simulation_index++) {
             simulation_t* simulation = &seeker->simulations[simulation_index];
 
@@ -1188,7 +1188,7 @@ void seeker_crossover_mutation(seeker_t* seeker) {
                 continue;
             }
 
-            if (MUTATION_METHOD == MUTATION_METHOD_BINOMIAL_MEMCPY) {
+            if (MUTATION_METHOD == MUTATION_METHOD_BINOMIAL_MEMSET) {
                 for (u32 mutation = 0; mutation < mutations; mutation++) {
                     u32 rule_index = random_sample_u32(ruleset_size);
                     u8 rule = (u8) random_sample_u32(CELL_STATES);

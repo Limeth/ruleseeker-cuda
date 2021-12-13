@@ -77,8 +77,8 @@
  */
 /// A mutation is determined granularly per-rule -- very expensive.
 #define MUTATION_METHOD_UNIFORM 0
-/// Number of mutations determined beforehand, then applied via sparse memcpy's.
-#define MUTATION_METHOD_BINOMIAL_MEMCPY 1
+/// Number of mutations determined beforehand, then applied via sparse memset's.
+#define MUTATION_METHOD_BINOMIAL_MEMSET 1
 /// Number of mutations determined beforehand, then applied via kernel.
 #define MUTATION_METHOD_BINOMIAL_KERNEL 2
 ///@}
@@ -93,9 +93,9 @@
  * Grids wrap around, as if they were the surface of a torus.
  */
 /// [uint] Simulation grid width.
-#define GRID_WIDTH  16
+#define GRID_WIDTH  32
 /// [uint] Simulation grid height.
-#define GRID_HEIGHT 8
+#define GRID_HEIGHT 32
 /// [enum] The shape of the grid's cells (square for Conway's GoL).
 #define GRID_GEOMETRY GRID_GEOMETRY_HEXAGON
 /// [enum] Which cells are considered in the neighbourhood (vertex for Conway's GoL).
@@ -148,7 +148,7 @@
 /// [uint] Execution block width and height.
 #define BLOCK_LENGTH 16
 /// [bool] Whether to verify the GPU simulation with an equivalent CPU simulation.
-#define CPU_VERIFY false
+#define CPU_VERIFY true
 /// [bool] `true` to keep aspect ratio, `false` to stretch to window.
 #define KEEP_ASPECT_RATIO true
 /// [bool] `true` if multisampling should be enabled to fix "jagged" edges, `false` otherwise.
