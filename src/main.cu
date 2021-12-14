@@ -223,6 +223,8 @@ void print_configuration() {
     printf("\tshared_subgrid_area: %d\n", SHARED_SUBGRID_AREA);
     printf("\tshared_subgrid_load_iterations: %d\n", SHARED_SUBGRID_LOAD_ITERATIONS);
     printf("\n");
+    printf("CPU verification: %s\n", CPU_VERIFY ? "ENABLED -- expect performance impact" : "disabled");
+    printf("\n");
 }
 
 /// Calculates the 1D index of a cell within shared memory.
@@ -1402,7 +1404,11 @@ int main_seek(int argc, char **argv) {
 
     seeker_init(argc, argv, &seeker);
     seeker_loop(&seeker);
-    seeker_output(&seeker);
+
+    if (SAVE_FOUND_RULESETS) {
+        seeker_output(&seeker);
+    }
+
     seeker_finalize(&seeker);
 
     return 0;

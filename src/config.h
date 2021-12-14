@@ -101,7 +101,7 @@
 /// [enum] Which cells are considered in the neighbourhood (vertex for Conway's GoL).
 #define CELL_NEIGHBOURHOOD_TYPE CELL_NEIGHBOURHOOD_TYPE_EDGE
 /// [uchar] Number of states a cell can become (2 for Conway's GoL).
-#define CELL_STATES 3
+#define CELL_STATES 6
 ///@}
 
 // Conway's GoL:
@@ -121,7 +121,7 @@
 /// [uint] Number of top candidates to use for crossover and mutation (including elites).
 #define POPULATION_SELECTION 16
 /// [float] The chance that a single rule of a ruleset changes during mutation.
-#define MUTATION_CHANCE 0.5
+#define MUTATION_CHANCE 0.05
 /// [bool] Whether to make mutation chance dependent on rank -- lower mutation chance for high fitness candidates.
 #define MUTATION_CHANCE_ADAPTIVE_BY_RANK true
 /// [enum] The method used for the crossover operation.
@@ -129,11 +129,11 @@
 /// [enum] The method used for the mutation operation.
 #define MUTATION_METHOD MUTATION_METHOD_BINOMIAL_KERNEL
 /// [uint; N] N iteration indices at which to evaluate the fitness function.
-#define FITNESS_FN_TARGET_ITERATIONS 50, 100, 150, 200, 201, 202, 203
+#define FITNESS_FN_TARGET_ITERATIONS 20, 50
 /// [uint; N] N target fit cell proportions evaluated at corresponding FITNESS_FN_TARGET_ITERATIONS indices.
-#define FITNESS_FN_TARGET_VALUES 0.55, 0.05, 0.55, 0.0, 0.0, 0.0, 0.0
+#define FITNESS_FN_TARGET_VALUES 0.05, 0.95
 /// [enum] Which cell evaluation method to use (decide whether a given cell is "fit", or not).
-#define FITNESS_EVAL FITNESS_EVAL_UPDATE
+#define FITNESS_EVAL FITNESS_EVAL_STATE
 /// [uint] Which state to count the proportion of.
 #define FITNESS_EVAL_STATE_INDEX 0
 /// [enum] Which way to evaluate the fitness function.
@@ -148,7 +148,7 @@
 /// [uint] Execution block width and height.
 #define BLOCK_LENGTH 16
 /// [bool] Whether to verify the GPU simulation with an equivalent CPU simulation.
-#define CPU_VERIFY true
+#define CPU_VERIFY false
 /// [bool] `true` to keep aspect ratio, `false` to stretch to window.
 #define KEEP_ASPECT_RATIO true
 /// [bool] `true` if multisampling should be enabled to fix "jagged" edges, `false` otherwise.
@@ -166,16 +166,19 @@
 /// [uint] Initial window height.
 #define WINDOW_HEIGHT 1000
 /// [uint] Max number of frames exported as PNG.
-/* #define EXPORT_FRAMES 100 */
+#define EXPORT_FRAMES 100
+/// [bool] Whether to wait for a key press after the initialization.
 #define PROMPT_TO_START false
 /// [uint] Close the application after this many frames. Useful for profiling. Uncomment to disable.
 /* #define EXIT_AFTER_FRAMES 3 */
 /// [uint] Close the application after this many populations. Useful for profiling. Uncomment to disable.
-/* #define EXIT_AFTER_POPULATIONS 5 */
+/* #define EXIT_AFTER_POPULATIONS 2 */
+/// [bool] Whether or not to save found rulesets.
+#define SAVE_FOUND_RULESETS true
 /// [bool] Whether to use the kernel with shared memory.
 #define USE_SHARED_MEMORY true
 /// [bool] Whether to use `srand` and `rand` methods for random number sampling (`true`), or a cryptographically secure RNG `arc4random` (`false`).
-#define DETERMINISTIC_RANDOMNESS false
+#define DETERMINISTIC_RANDOMNESS true
 /// [bool] Whether to enable `debug_synchronous` for all CUB calls to print debug info.
 #define CUB_DEBUG_SYNCHRONOUS false
 /// [bool] Whether to print the update time when running the `show` subprogram.
