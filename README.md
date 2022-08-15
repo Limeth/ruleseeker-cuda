@@ -1,3 +1,13 @@
+# About
+
+A GPU-accelerated tool for discovering interesting 2D cellular automata.
+
+![demo](demos/demo-4state.webp)
+
+The tool supports multiple cell shapes (shown in red) and neighbourhoods (shown in cyan).
+
+![cell shapes and neighbourhoods](demos/neighbourhoods.png)
+
 # Compiling
 Requirements:
 * libglew-dev: For initializing OpenGL
